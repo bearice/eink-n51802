@@ -59,7 +59,7 @@
 
 | 模式 | 触发方式 | 动作 | 状态 |
 |---|---|---|---|
-| 运行时 | `PIN_CNF[9]` SENSE→DETECT→GPIOTE PORT 中断 | 重新开始广播、复位空闲计数、LED2 闪三下、串口打印 `P9 field detected` | **已实现并验证**（用软件拉高模拟） |
+| 运行时 | `PIN_CNF[9]` SENSE→DETECT→GPIOTE PORT 中断 | 重新开始广播、复位空闲计数、LED2 连闪 6 次、串口打印 `P9 field detected` | **已实现，手机 NFC 实测可触发** |
 | 关机 | SYSTEM OFF + SENSE 高电平唤醒 | 复位重启，重新刷开机信息页 | 已实现，`-DENABLE_P9_WAKE=1` 才启用 |
 
 P9 上没有任何直流偏置（耦合电容隔直，外部 150 kΩ 下拉落不到这个引脚上，实测引脚悬空、电平漂移），所以固件**打开内部下拉**并配置 `SENSE=high`：闲置低电平，向上的脉冲（RF 场或手动短接 VCC）产生上升沿触发。
