@@ -32,9 +32,7 @@
 #define EPD_ROWBYTES (EPD_WIDTH / 8)   /* 50 bytes per row */
 
 static int s_panel_ready;           /* panel initialised, RAM valid      */
-static int s_keep_awake = 1;         /* 1 = never deep-sleep the panel    */
-
-void eink_set_keep_awake(int on) { s_keep_awake = on; }
+void eink_set_keep_awake(int on) { (void)on; }
 int eink_panel_ready(void) { return s_panel_ready; }
 
 static void spi_bit(uint32_t bit) {
@@ -532,15 +530,13 @@ void eink_sleep(void) {
      * controller RAM, which partial updates rely on. When keep-awake is
      * requested the panel stays initialised so windowed writes work;
      * otherwise it sleeps like the stock firmware does. */
-    if (!s_keep_awake) {
-        s_panel_ready = 0;
-        if (eink_variant == EINK_V2) {
-            cmd(0x10);
-            dat(0x01);
-            delay_ms(100);
-        } else {
-            epd_all_idle();
-        }
+    s_panel_ready = 0;
+    if (eink_variant == EINK_V2) {
+        cmd(0x10);
+        dat(0x01);
+        delay_ms(100);
+    } else {
+        epd_all_idle();
     }
 }
 

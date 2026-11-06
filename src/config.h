@@ -20,7 +20,7 @@
 #define CFG_PAGE_ADDR   0x3FC00UL
 #define CFG_PAGE_SIZE   1024UL
 #define CFG_MAGIC       0x45494E4BUL        /* 'EINK' */
-#define CFG_VERSION     4
+#define CFG_VERSION     5
 #define CFG_NAME_LEN    16
 
 typedef struct {
@@ -59,7 +59,7 @@ int cfg_from_flash(void);
  * Supported: name=<str>, adv=<sec>, idle=<rounds>, wake=<0|1>,
  *            addr=AA:BB:CC:DD:EE:FF, addr=auto (use FICR),
  *            boot=<0|1> (redraw the screen on reset),
- *            sleep=<0|1> (deep-sleep the panel after a refresh), reset. */
+ *            reset. */
 int cfg_apply_text(const char *s, uint32_t len);
 
 #endif

@@ -189,12 +189,6 @@ int cfg_apply_text(const char *s, uint32_t len) {
     if (streq(s, "addr", 4) && eq == 4) {
         return parse_addr(val, vlen);
     }
-    if (streq(s, "sleep", 5) && eq == 5) {
-        uint32_t v;
-        if (!parse_u32(val, vlen, &v) || v > 1) return -1;
-        m_cfg.panel_sleep = (uint8_t)v;
-        return 1;
-    }
     if (streq(s, "boot", 4) && eq == 4) {
         uint32_t v;
         if (!parse_u32(val, vlen, &v) || v > 1) return -1;

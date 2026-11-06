@@ -314,9 +314,10 @@ static void img_write(const uint8_t *p, uint16_t len) {
         }
         break;
     case IMG_OP_RECT:
-        /* Partial update: 8 bytes of geometry (x, y, w, h as u16 LE) after
-         * the opcode. Only that rectangle travels over BLE; the panel still
-         * does a full refresh afterwards. */
+        /* Partial updates were removed: the UC8176 cannot refresh without a
+         * full re-init, which invalidates the RAM a window write would rely
+         * on. Treat the request as "start a full frame" so a client that
+         * still sends 0x05 does not break the display. */
         if (len >= 9) {
             uint32_t x = (uint32_t)p[1] | ((uint32_t)p[2] << 8);
             uint32_t y = (uint32_t)p[3] | ((uint32_t)p[4] << 8);
@@ -324,10 +325,8 @@ static void img_write(const uint8_t *p, uint16_t len) {
             uint32_t h = (uint32_t)p[7] | ((uint32_t)p[8] << 8);
             m_img_count = 0;
             m_bt_transfer = 1;
-            if (!eink_partial_begin_checked(x, y, w, h)) {
-                hwuart_puts("IMG rect -> full (panel not ready)\r\n");
-                eink_stream_begin();
-            }
+            hwuart_puts("IMG rect ignored, full frame required\r\n");
+            eink_stream_begin();
             m_img_state = 1;
             hwuart_puts("IMG rect ");
             hwuart_put_u32(x); hwuart_puts(",");
@@ -512,7 +511,7 @@ int main(void) {
      * MISO, which this board does not route, so the variant is fixed
      * here. Set EINK_V2 instead to try the UC8179 batch. */
     eink_set_variant(EINK_V1);
-    eink_set_keep_awake(g_cfg->panel_sleep ? 0 : 1);
+
     if (g_cfg->boot_refresh) {
         hwuart_puts("E-ink: UC8176 init\r\n");
         m_panel_busy = 1;
