@@ -1,0 +1,26 @@
+# 构建产物
+bin/
+build/
+*.o
+*.elf
+*.map
+
+# 原厂固件 dump：这是本机设备的固件，不随仓库分发
+nrf51802-flash-256k.bin
+
+# Ghidra 反编译输出（体积大，按 docs/REVERSE_ENGINEERING.md 自行生成）
+ghidra_dump.c
+dump.asm
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
