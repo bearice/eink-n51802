@@ -62,9 +62,15 @@ static void led_set(uint32_t pin, int on) { gpio_write(pin, on ? 0 : 1); }
 static uint32_t m_idle_advertising_rounds;
 
 static void wake_input_init(void) {
-    /* Harmless with the wake path disabled: SENSE only drives the DETECT
-     * signal, and no GPIOTE/port interrupt is enabled here. */
-    gpio_dir_input(PIN_WAKE, CFG_INPUT_SENSE_HIGH);
+    /* P9 has no defined DC level on this board: the coupling capacitor
+     * blocks DC, so the external 150 kOhm pull-down does not set the pin
+     * (measured: it floats, sometimes high, sometimes low). Without a
+     * defined level edge detection is meaningless - a manual short to VCC
+     * produced no edge at all because the pin was already high.
+     * The internal pull-down fixes that: idle = low, and the coil's
+     * positive pulse (or a short to VCC) gives the rising edge the stock
+     * firmware expects with its SENSE = high. */
+    gpio_dir_input(PIN_WAKE, CFG_INPUT_SENSE_HIGH_PD);
 }
 
 /* Runtime detection of the RF field on P9 (option A): SENSE -> DETECT ->
@@ -411,11 +417,12 @@ int main(void) {
             hwuart_puts("P9 field detected\r\n");
             m_idle_advertising_rounds = 0;
             if (!connected) start_advertising();
-            for (int i = 0; i < 3; i++) {
+            /* ~1.2 s of blinking so a manual test is unmistakable. */
+            for (int i = 0; i < 6; i++) {
                 led_set(PIN_LED2, 1);
-                delay_ms(60);
+                delay_ms(100);
                 led_set(PIN_LED2, 0);
-                delay_ms(60);
+                delay_ms(100);
             }
             led_set(PIN_LED2, connected);     /* restore indication */
         }

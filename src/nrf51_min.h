@@ -45,6 +45,8 @@
 /* nRF51 PIN_CNF SENSE field is bits 16-17: 2 = wake on high level, 3 = low.
  * The connected(input-buffer) state is bit1 = 0, so this is also input. */
 #define CFG_INPUT_SENSE_HIGH 0x00020000UL  /* input, no pull, sense=high      */
+#define CFG_INPUT_SENSE_LOW  0x00030000UL  /* input, no pull, sense=low       */
+#define CFG_INPUT_SENSE_HIGH_PD 0x00020004UL /* input, pull-DOWN, sense=high  */
 
 /* ---- CLOCK/POWER (shared block, base 0x40000000) ---- */
 #define CLOCK_BASE      0x40000000UL
