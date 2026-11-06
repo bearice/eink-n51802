@@ -324,7 +324,10 @@ static void img_write(const uint8_t *p, uint16_t len) {
             uint32_t h = (uint32_t)p[7] | ((uint32_t)p[8] << 8);
             m_img_count = 0;
             m_bt_transfer = 1;
-            eink_partial_begin(x, y, w, h);
+            if (!eink_partial_begin_checked(x, y, w, h)) {
+                hwuart_puts("IMG rect -> full (panel not ready)\r\n");
+                eink_stream_begin();
+            }
             m_img_state = 1;
             hwuart_puts("IMG rect ");
             hwuart_put_u32(x); hwuart_puts(",");
@@ -509,6 +512,7 @@ int main(void) {
      * MISO, which this board does not route, so the variant is fixed
      * here. Set EINK_V2 instead to try the UC8179 batch. */
     eink_set_variant(EINK_V1);
+    eink_set_keep_awake(g_cfg->panel_sleep ? 0 : 1);
     if (g_cfg->boot_refresh) {
         hwuart_puts("E-ink: UC8176 init\r\n");
         m_panel_busy = 1;

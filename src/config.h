@@ -20,7 +20,7 @@
 #define CFG_PAGE_ADDR   0x3FC00UL
 #define CFG_PAGE_SIZE   1024UL
 #define CFG_MAGIC       0x45494E4BUL        /* 'EINK' */
-#define CFG_VERSION     3
+#define CFG_VERSION     4
 #define CFG_NAME_LEN    16
 
 typedef struct {
@@ -30,6 +30,7 @@ typedef struct {
     uint16_t idle_rounds;        /* silent adv rounds before sleeping     */
     uint8_t  wake_enable;        /* 1 = P9 SYSTEM OFF wake allowed        */
     uint8_t  boot_refresh;       /* 1 = draw the info screen at boot      */
+    uint8_t  panel_sleep;        /* 1 = deep-sleep the panel after a refresh */
     uint8_t  flags;              /* reserved                              */
     char     name[CFG_NAME_LEN]; /* BLE device name, NUL padded           */
     uint8_t  addr[6];            /* BLE address, little-endian            */
@@ -57,7 +58,8 @@ int cfg_from_flash(void);
  * Returns 1 if the config changed, 0 if unknown key, -1 on bad value.
  * Supported: name=<str>, adv=<sec>, idle=<rounds>, wake=<0|1>,
  *            addr=AA:BB:CC:DD:EE:FF, addr=auto (use FICR),
- *            boot=<0|1> (redraw the screen on reset), reset. */
+ *            boot=<0|1> (redraw the screen on reset),
+ *            sleep=<0|1> (deep-sleep the panel after a refresh), reset. */
 int cfg_apply_text(const char *s, uint32_t len);
 
 #endif

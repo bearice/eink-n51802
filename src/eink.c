@@ -31,6 +31,12 @@
 #define EPD_HEIGHT  300
 #define EPD_ROWBYTES (EPD_WIDTH / 8)   /* 50 bytes per row */
 
+static int s_panel_ready;           /* panel initialised, RAM valid      */
+static int s_keep_awake = 1;         /* 1 = never deep-sleep the panel    */
+
+void eink_set_keep_awake(int on) { s_keep_awake = on; }
+int eink_panel_ready(void) { return s_panel_ready; }
+
 static void spi_bit(uint32_t bit) {
     /* Mode 0, MSB first: drive the data line while CLK is low, then raise
      * CLK. This is exactly the stock firmware's bit loop (FUN_00000ac4):
@@ -229,6 +235,7 @@ static void init_v2(void) {
     dat(0x00);
     dat(0x00);
     delay_ms(2);
+    s_panel_ready = 1;
 }
 
 /* Stock reset (FUN_00000c08): BS1 low, then three RST low/high pulses of
@@ -253,6 +260,7 @@ static void init_v1(void) {
     cmd(0x00);            /* panel setting */
     dat(0x0F);
     dat(0x0D);
+    s_panel_ready = 1;    /* RAM is now defined for windowed writes */
 }
 
 void eink_init(void) {
@@ -520,15 +528,19 @@ void eink_show_test_pattern(void) {
 }
 
 void eink_sleep(void) {
-    /* UC8176 enters deep sleep inside turn_on_display() (0x02 then 0x07 =
-     * 0xA5), exactly like the stock firmware, so only the idle levels are
-     * left to restore here. */
-    if (eink_variant == EINK_V2) {
-        cmd(0x10);
-        dat(0x01);
-        delay_ms(100);
-    } else {
-        epd_all_idle();
+    /* The shutdown tail (0x02 power off, 0x07 deep sleep) invalidates the
+     * controller RAM, which partial updates rely on. When keep-awake is
+     * requested the panel stays initialised so windowed writes work;
+     * otherwise it sleeps like the stock firmware does. */
+    if (!s_keep_awake) {
+        s_panel_ready = 0;
+        if (eink_variant == EINK_V2) {
+            cmd(0x10);
+            dat(0x01);
+            delay_ms(100);
+        } else {
+            epd_all_idle();
+        }
     }
 }
 
@@ -539,13 +551,15 @@ void eink_sleep(void) {
  * the pixels of the requested rectangle (see eink_partial_begin).
  */
 static uint32_t m_plane_bytes;      /* bytes expected for the open plane */
-
 void eink_stream_begin(void) {
-    if (eink_variant == EINK_V2) {
-        eink_reset();
-        init_v2();
-    } else {
-        init_v1();
+    if (!s_panel_ready) {
+        if (eink_variant == EINK_V2) {
+            eink_reset();
+            init_v2();
+        } else {
+            init_v1();
+        }
+        s_panel_ready = 1;
     }
     m_plane_bytes = (uint32_t)EPD_ROWBYTES * EPD_HEIGHT;
     cmd((eink_variant == EINK_V2) ? 0x24 : 0x10);
@@ -556,14 +570,18 @@ void eink_stream_begin(void) {
  * start/end (in pixels, 9 bits each), 0x4E/0x4F = cursors.
  * The panel still needs a full refresh afterwards (the red pigment has no
  * partial waveform), but only the rectangle has to travel over BLE. */
-void eink_partial_begin(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
-    if (x >= EPD_WIDTH || y >= EPD_HEIGHT) { eink_stream_begin(); return; }
+int eink_partial_begin_checked(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    /* A window write only refreshes the pixels inside the rectangle; the
+     * rest of the controller RAM must still hold the previous frame.
+     * That is only true while the panel has stayed initialised and
+     * powered - after 0x07 deep sleep the RAM is not guaranteed. If we
+     * cannot guarantee it, refuse and let the caller send a full frame.
+     */
+    if (!s_panel_ready) return 0;
+    if (x >= EPD_WIDTH || y >= EPD_HEIGHT) return 0;
     if (x + w > EPD_WIDTH) w = EPD_WIDTH - x;
     if (y + h > EPD_HEIGHT) h = EPD_HEIGHT - y;
-    if (w == 0 || h == 0) { eink_stream_begin(); return; }
-
-    if (eink_variant == EINK_V2) { eink_reset(); init_v2(); }
-    else                         { init_v1(); }
+    if (w == 0 || h == 0) return 0;
 
     cmd(0x44);
     dat((uint8_t)(x / 8));
@@ -581,6 +599,7 @@ void eink_partial_begin(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
 
     m_plane_bytes = ((w + 7) / 8) * h;
     cmd((eink_variant == EINK_V2) ? 0x24 : 0x10);
+    return 1;
 }
 
 void eink_stream_byte(uint8_t b) {
@@ -631,4 +650,10 @@ void eink_refresh_finish(void) {
         delay_ms(300);
     }
     epd_all_idle();
+}
+
+void eink_partial_begin(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (!eink_partial_begin_checked(x, y, w, h)) {
+        eink_stream_begin();        /* fall back to a full frame */
+    }
 }

@@ -37,6 +37,9 @@ void eink_show_test_pattern(void);
  * The caller feeds EPD_BYTES bytes (400*300/8 = 15000) per plane. */
 void eink_stream_begin(void);
 void eink_partial_begin(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+int  eink_partial_begin_checked(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+void eink_set_keep_awake(int on);
+int  eink_panel_ready(void);
 void eink_stream_byte(uint8_t b);
 void eink_stream_begin_red(void);
 void eink_stream_end(void);
