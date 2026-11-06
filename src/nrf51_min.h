@@ -31,11 +31,17 @@
 #define GPIO_DIRCLR     0x51CUL
 #define GPIO_PIN_CNFG(n) (0x700UL + ((uint32_t)(n) * 4UL))
 
-/* PIN_CNFG (nRF51: DIR bit0, INPUT bit1, PULL bits2-3, DRIVE bits4-5) */
+/* PIN_CNFG (nRF51: DIR bit0, INPUT bit1, PULL bits2-3, DRIVE bits4-5).
+ * Verified on hardware: bit1 = 0 CONNECTS the input buffer, bit1 = 1
+ * disconnects it, and a disconnected pin always reads 0. Measured on P9:
+ *   PIN_CNF = 0x0C (pull-up)          -> reads 1
+ *   PIN_CNF = 0x0E (pull-up + bit1)   -> reads 0
+ * The stock firmware agrees: it writes PIN_CNF[9] = 0x00020000, i.e.
+ * input connected, no pull, SENSE = high. */
 #define CFG_OUTPUT        0x01UL           /* S0D0 push-pull output           */
-#define CFG_INPUT_NOPULL  0x02UL           /* input, no pull                  */
-#define CFG_INPUT_PULLUP  0x0EUL           /* input, pull-up (0x02 | 3<<2)    */
-#define CFG_INPUT_PULLDOWN 0x06UL          /* input, pull-down (0x02 | 1<<2)  */
+#define CFG_INPUT_NOPULL  0x00UL           /* input connected, no pull        */
+#define CFG_INPUT_PULLUP  0x0CUL           /* input connected, pull-up 3<<2   */
+#define CFG_INPUT_PULLDOWN 0x04UL          /* input connected, pull-down 1<<2 */
 /* nRF51 PIN_CNF SENSE field is bits 16-17: 2 = wake on high level, 3 = low.
  * The connected(input-buffer) state is bit1 = 0, so this is also input. */
 #define CFG_INPUT_SENSE_HIGH 0x00020000UL  /* input, no pull, sense=high      */
