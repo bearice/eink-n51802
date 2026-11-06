@@ -36,6 +36,9 @@
 #define CFG_INPUT_NOPULL  0x02UL           /* input, no pull                  */
 #define CFG_INPUT_PULLUP  0x0EUL           /* input, pull-up (0x02 | 3<<2)    */
 #define CFG_INPUT_PULLDOWN 0x06UL          /* input, pull-down (0x02 | 1<<2)  */
+/* nRF51 PIN_CNF SENSE field is bits 16-17: 2 = wake on high level, 3 = low.
+ * The connected(input-buffer) state is bit1 = 0, so this is also input. */
+#define CFG_INPUT_SENSE_HIGH 0x00020000UL  /* input, no pull, sense=high      */
 
 /* ---- CLOCK/POWER (shared block, base 0x40000000) ---- */
 #define CLOCK_BASE      0x40000000UL
@@ -93,6 +96,7 @@
 #define PIN_LED2   4    /* low-active LED 2 (BLE state)                  */
 #define PIN_LED3   5    /* low-active LED 3 (e-ink busy)                 */
 #define PIN_UART_TX 8   /* to RP2040 debugprobe UART RX (57600 8N1)      */
+#define PIN_WAKE 9      /* RF/NFC coil coupling input, external 150k pulldown */
 #define PIN_EPD_IO 10   /* shared data line: DIN out + status read back  */
 #define PIN_EPD_CK 11   /* SPI clock                                     */
 #define PIN_EPD_CS 12   /* chip select, active low                       */

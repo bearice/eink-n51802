@@ -1,14 +1,17 @@
-/* nRF51802 e-ink tag: boot -> e-ink test pattern -> BLE advertising.
+/* nRF51802 e-ink tag: boot -> information screen -> BLE advertising.
  *
  * Boot flow:
- *   1. HFCLK on, TIMER1 time base, software UART TX=P8 (57600 8N1)
- *   2. E-ink: reset, init, stream test pattern, full refresh (~20 s), sleep
+ *   1. HFCLK/RTC1 time base, hardware UART TX=P8 (57600 8N1)
+ *   2. E-ink: reset, init, stream the information screen, refresh, sleep
  *   3. SoftDevice S110: enable + GAP advertising ("EINK-N51802")
- *   4. Loop on SoftDevice events; re-start advertising on GAP timeout.
+ *   4. Loop on SoftDevice events. After six silent advertising intervals
+ *      the firmware enters SYSTEM OFF with P9 armed as a sense-high wake
+ *      input, so a sufficiently strong RF field coupled into the coil
+ *      resets the chip and restarts this sequence.
  *
- * TIMER1, not TIMER0: the SoftDevice owns TIMER0 (see nrf51_min.h).
- * UART is bit-banged because hardware UART0 never transmits on this
- * board (see swuart.h).
+ * The P9 circuit is a passive RF coupling input: coil -> coupling
+ * capacitor -> P9, coil -> GND, P9 -> 150 kOhm pull-down. It can sense
+ * the field; it cannot receive NFC protocol frames.
  */
 #include "nrf51_min.h"
 #include "hwuart.h"
@@ -37,6 +40,26 @@ static void led_init(void) {
     gpio_write(PIN_LED3, 1);
 }
 static void led_set(uint32_t pin, int on) { gpio_write(pin, on ? 0 : 1); }
+
+/* ---------- RF/NFC-coil wake on P9 ----------
+ * The external circuit is a coupling capacitor to the coil(s), the other
+ * end of the coil grounded, and a 150 kOhm pull-down on P9. The nRF51802
+ * cannot decode NFC, but SYSTEM OFF retains GPIO SENSE configuration:
+ * a positive RF excursion that crosses the input threshold wakes the MCU
+ * and restarts it as a normal reset. */
+static uint32_t m_idle_advertising_rounds;
+
+static void wake_input_init(void) {
+    gpio_dir_input(PIN_WAKE, CFG_INPUT_SENSE_HIGH);
+}
+
+static void enter_system_off_for_wake(void) {
+    hwuart_puts("BLE idle; P9 wake armed, system off\r\n");
+    (void)sd_ble_gap_adv_stop();
+    (void)sd_softdevice_disable();
+    (void)sd_power_system_off();
+    for (;;) { }
+}
 
 /* ---------- SoftDevice / BLE ---------- */
 static void sd_assert_handler(uint32_t pc, uint16_t line, const uint8_t *file) {
@@ -254,8 +277,12 @@ int main(void) {
     lfclk_start_rc();                     /* LFCLK required by RTC1     */
     rtc_init();                           /* RTC1: ms time base         */
     led_init();
+    wake_input_init();
     uart_init();
     hwuart_puts("\r\nEINK-N51802 boot (WFT0420CZ15 400x300)\r\n");
+    hwuart_puts(" RESETREAS=0x");
+    hwuart_put_hex32(REG(POWER_BASE, POWER_RESETREAS));
+    hwuart_puts("\r\n");
 
     led_set(PIN_LED1, 1);                 /* P3 on: power/boot  */
     led_set(PIN_LED3, 1);                 /* P5 on: e-ink busy  */
@@ -305,9 +332,14 @@ int main(void) {
             if (err != NRF_SUCCESS) break;
             uint16_t evt_id = (uint16_t)(evt_buf[0] | (evt_buf[1] << 8));
             if (evt_id == BLE_GAP_EVT_TIMEOUT) {
-                /* advertising timed out -> restart it */
+                /* Six silent 5 s advertising periods are enough; after that
+                 * use the RF-coil P9 input as the hardware wake source. */
+                if (++m_idle_advertising_rounds >= 6) {
+                    enter_system_off_for_wake();
+                }
                 start_advertising();
             } else if (evt_id == BLE_GAP_EVT_CONNECTED) {
+                m_idle_advertising_rounds = 0;
                 m_conn_handle = ((ble_evt_t *)evt_buf)->evt.gap_evt.conn_handle;
                 led_set(PIN_LED2, 0);     /* solid while connected */
                 hwuart_puts("BLE connected\r\n");
