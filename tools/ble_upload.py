@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 W, H = 400, 300
 CHR = "0000fff1-0000-1000-8000-00805f9b34fb"
 CHUNK = 19
+OP_BEGIN, OP_DATA, OP_RED, OP_END, OP_RECT = 0x01, 0x02, 0x03, 0x04, 0x05
 
 
 def make_image():
@@ -61,6 +62,32 @@ def to_planes(img):
     return bytes(black), bytes(red)
 
 
+def to_planes_rect(img, x, y, w, h):
+    """Bytes for just the given rectangle (used by the partial update)."""
+    black = bytearray()
+    red = bytearray()
+    stride = (w + 7) // 8
+    for row in range(h):
+        for xb in range(stride):
+            b_byte = 0
+            r_byte = 0
+            for bit in range(8):
+                px = x + xb * 8 + bit
+                if px >= x + w:
+                    b_byte |= 1 << (7 - bit)      # outside -> white
+                    r_byte |= 1 << (7 - bit)
+                    continue
+                r, g, b = img.getpixel((px, y + row))
+                is_black = r < 128 and g < 128 and b < 128
+                is_red = r > 128 and g < 128 and b < 128
+                if not is_black:
+                    b_byte |= 1 << (7 - bit)
+                if not is_red:
+                    r_byte |= 1 << (7 - bit)
+            black.append(b_byte)
+            red.append(r_byte)
+    return bytes(black), bytes(red)
+
 async def main():
     img = make_image()
     black, red = to_planes(img)
@@ -73,8 +100,29 @@ async def main():
         return 1
     print(f"found {dev.address} ({dev.name})")
 
+    rect = None
+    if len(sys.argv) > 1 and sys.argv[1] == "--rect":
+        rect = tuple(int(v) for v in sys.argv[2:6])   # x y w h
+
     async with BleakClient(dev, timeout=20.0) as cli:
         print(f"connected={cli.is_connected}")
+        if rect:
+            x, y, w, h = rect
+            pb, pr = to_planes_rect(img, x, y, w, h)
+            print(f"partial {w}x{h} at ({x},{y}) -> {len(pb)} bytes/plane")
+            cmd = bytes([OP_RECT]) + bytes([x & 0xFF, x >> 8, y & 0xFF, y >> 8,
+                                            w & 0xFF, w >> 8, h & 0xFF, h >> 8])
+            await cli.write_gatt_char(CHR, cmd, response=False)
+            for i in range(0, len(pb), CHUNK):
+                await cli.write_gatt_char(CHR, bytes([OP_DATA]) + pb[i:i + CHUNK],
+                                          response=False)
+            for i in range(0, len(pr), CHUNK):
+                await cli.write_gatt_char(CHR, bytes([OP_DATA]) + pr[i:i + CHUNK],
+                                          response=False)
+            await cli.write_gatt_char(CHR, bytes([OP_END]), response=False)
+            print("partial refresh requested; waiting")
+            await asyncio.sleep(25)
+            return 0
         await cli.write_gatt_char(CHR, bytes([0x01]), response=False)
         sent = 0
         for i in range(0, len(black), CHUNK):

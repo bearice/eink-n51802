@@ -16,6 +16,7 @@
 #include "nrf51_min.h"
 #include "hwuart.h"
 #include "eink.h"
+#include "config.h"
 
 #include "nrf_sdm.h"
 #include "nrf_soc.h"
@@ -41,6 +42,7 @@ static void led_init(void) {
 }
 static void led_set(uint32_t pin, int on) { gpio_write(pin, on ? 0 : 1); }
 
+
 /* ---------- RF/NFC-coil wake on P9 ----------
  * The external circuit is a coupling capacitor to the coil(s), the other
  * end of the coil grounded, and a 150 kOhm pull-down on P9. The nRF51802
@@ -56,7 +58,7 @@ static void led_set(uint32_t pin, int on) { gpio_write(pin, on ? 0 : 1); }
  * tuned (resonant capacitor) or a detector/comparator is fitted.
  */
 #ifndef ENABLE_P9_WAKE
-#define ENABLE_P9_WAKE 0
+#define ENABLE_P9_WAKE 1   /* capability; the config flag decides */
 #endif
 
 static uint32_t m_idle_advertising_rounds;
@@ -106,6 +108,29 @@ static void enter_system_off_for_wake(void) {
 #endif
 
 /* ---------- SoftDevice / BLE ---------- */
+static const cfg_t *g_cfg;          /* live configuration (config.c) */
+
+static uint32_t str_len(const char *s) {
+    uint32_t n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+/* Apply the parts of the configuration that the GAP layer owns. Called at
+ * boot and after a config change; it also restarts advertising so the new
+ * name / address actually reach the air. */
+static void apply_gap_config(void) {
+    static const ble_gap_conn_sec_mode_t open = { 0 };
+    (void)sd_ble_gap_device_name_set(&open, (const uint8_t *)g_cfg->name,
+                                     (uint16_t)str_len(g_cfg->name));
+    if (g_cfg->addr_set) {
+        ble_gap_addr_t a;
+        for (int i = 0; i < 6; i++) a.addr[i] = g_cfg->addr[i];
+        a.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
+        (void)sd_ble_gap_address_set(BLE_GAP_ADDR_CYCLE_MODE_NONE, &a);
+    }
+}
+
 static void sd_assert_handler(uint32_t pc, uint16_t line, const uint8_t *file) {
     (void)pc; (void)line; (void)file;
     /* Fatal stack error: reset. SCB AIRCR 0xE000ED0C, SYSRESETREQ. */
@@ -130,7 +155,6 @@ static void check(const char *what, uint32_t err) {
 }
 
 #define ADV_INTERVAL_UNITS 32       /* 32 * 0.625ms = 20ms */
-#define ADV_TIMEOUT_S      5        /* re-arm advertising every 5 s */
 
 static void start_advertising(void) {
     /* Adv payload: flags + manufacturer-specific (Nordic company id 0x0059,
@@ -144,23 +168,36 @@ static void start_advertising(void) {
         0x02, 0xB0,                               /*  ... panel marker WFT0420CZ15 */
         0x01, 0x01,                               /*  ... SW version 1.1 */
     };
-    static const uint8_t scan_rsp[] = {
-        0x0C, 0x09, 'E', 'I', 'N', 'K', '-', 'N', '5', '1', '8', '0', '2',
-    };
-    static const ble_gap_adv_params_t adv_params = {
+    /* Scan response carries the configured name, built at run time so a
+     * config change actually reaches the air. Layout: [len][0x09][name]. */
+    static uint8_t scan_rsp[2 + 15];
+    uint32_t nlen = str_len(g_cfg->name);
+    if (nlen > 15) nlen = 15;
+    scan_rsp[0] = (uint8_t)(nlen + 1);
+    scan_rsp[1] = 0x09;                 /* complete local name */
+    for (uint32_t i = 0; i < nlen; i++) scan_rsp[2 + i] = (uint8_t)g_cfg->name[i];
+
+    ble_gap_adv_params_t adv_params = {
         .type          = BLE_GAP_ADV_TYPE_ADV_IND,
         .p_peer_addr   = 0,
         .fp            = BLE_GAP_ADV_FP_ANY,
         .p_whitelist   = 0,
         .interval      = ADV_INTERVAL_UNITS,
-        .timeout       = ADV_TIMEOUT_S,
+        .timeout       = g_cfg->adv_timeout_s,
         .channel_mask  = { 0, 0, 0 },
     };
     uint32_t err = sd_ble_gap_adv_data_set(adv_payload, (uint8_t)sizeof(adv_payload),
-                                           scan_rsp, (uint8_t)sizeof(scan_rsp));
-    check("adv_data", err);
-    err = sd_ble_gap_adv_start(&adv_params);
-    check("adv_start", err);
+                                           scan_rsp, (uint8_t)(2 + nlen));
+    if (err == NRF_SUCCESS) {
+        err = sd_ble_gap_adv_start(&adv_params);
+    }
+    if (err != NRF_SUCCESS) {
+        /* Restarting advertising while a central is connected is a normal
+         * no-op, not a fatal error - the disconnect handler restarts it. */
+        hwuart_puts("adv_start 0x");
+        hwuart_put_hex32(err);
+        hwuart_puts("\r\n");
+    }
     led_set(PIN_LED2, 0);         /* LED2 off = not connected (just advertising) */
 }
 
@@ -188,12 +225,44 @@ static void zero_bytes(void *p, uint32_t n) {
 #define IMG_OP_DATA  0x02
 #define IMG_OP_RED   0x03
 #define IMG_OP_END   0x04
+#define IMG_OP_RECT  0x05   /* partial update: x,y,w,h as u16 LE    */
 
 static uint16_t m_img_handle;
+static uint16_t m_cfg_handle;
 static uint32_t m_img_state;      /* 0 idle, 1 black plane, 2 red plane, 3 refreshing */
 static uint32_t m_img_count;      /* bytes pushed into the current plane  */
 static uint32_t m_refresh_until;  /* rtc_ms() deadline while refreshing   */
 static uint16_t m_conn_handle = BLE_CONN_HANDLE_INVALID;
+
+/* ---------- LED status display ----------
+ *   LED1 (P3): 1 Hz blink while advertising, off once a central connects
+ *   LED2 (P4): on = connected and idle, blinking = connected and
+ *              transferring, off = not connected
+ *   LED3 (P5): on while the panel is refreshing (boot or BLE triggered)
+ * All of it is time-driven from the main loop, nothing blocks. */
+static uint32_t m_bt_transfer;              /* image bytes arriving now */
+static volatile uint32_t m_panel_busy;       /* boot refresh in progress */
+
+
+
+
+static void led_tick(void) {
+    uint32_t now = rtc_ms();
+
+    int connected = (m_conn_handle != BLE_CONN_HANDLE_INVALID);
+
+    if (!connected) {
+        uint32_t lvl = ((now / 500U) & 1U);
+        led_set(PIN_LED1, lvl ? 1 : 0);                   /* 1 Hz blink */
+
+        led_set(PIN_LED2, 0);
+    } else {
+        led_set(PIN_LED1, 0);
+        if (m_bt_transfer) led_set(PIN_LED2, ((now / 100U) & 1U) ? 1 : 0);
+        else               led_set(PIN_LED2, 1);
+    }
+    led_set(PIN_LED3, (m_panel_busy || m_img_state == 3) ? 1 : 0);
+}
 
 #define IMG_REFRESH_MS 20000      /* UC8176 full 3-colour update */
 
@@ -207,6 +276,7 @@ static void img_finish(void) {
      * (S110 rejects sd_ble_gap_ppcp_set on this chip, so the timeout is
      * whatever the central picked, typically 4 s). */
     eink_refresh_start();
+    m_bt_transfer = 0;
     m_img_state = 3;
     m_refresh_until = rtc_ms() + IMG_REFRESH_MS;
     led_set(PIN_LED3, 1);         /* LED3 on while the panel refreshes */
@@ -228,6 +298,7 @@ static void img_write(const uint8_t *p, uint16_t len) {
     switch (p[0]) {
     case IMG_OP_BEGIN:
         m_img_count = 0;
+        m_bt_transfer = 1;
         eink_stream_begin();
         m_img_state = 1;
         hwuart_puts("IMG begin\r\n");
@@ -240,6 +311,26 @@ static void img_write(const uint8_t *p, uint16_t len) {
                 if (m_img_state == 1) img_switch_red();
                 else { img_finish(); break; }
             }
+        }
+        break;
+    case IMG_OP_RECT:
+        /* Partial update: 8 bytes of geometry (x, y, w, h as u16 LE) after
+         * the opcode. Only that rectangle travels over BLE; the panel still
+         * does a full refresh afterwards. */
+        if (len >= 9) {
+            uint32_t x = (uint32_t)p[1] | ((uint32_t)p[2] << 8);
+            uint32_t y = (uint32_t)p[3] | ((uint32_t)p[4] << 8);
+            uint32_t w = (uint32_t)p[5] | ((uint32_t)p[6] << 8);
+            uint32_t h = (uint32_t)p[7] | ((uint32_t)p[8] << 8);
+            m_img_count = 0;
+            m_bt_transfer = 1;
+            eink_partial_begin(x, y, w, h);
+            m_img_state = 1;
+            hwuart_puts("IMG rect ");
+            hwuart_put_u32(x); hwuart_puts(",");
+            hwuart_put_u32(y); hwuart_puts(" ");
+            hwuart_put_u32(w); hwuart_puts("x");
+            hwuart_put_u32(h); hwuart_puts("\r\n");
         }
         break;
     case IMG_OP_RED:
@@ -291,6 +382,68 @@ static void gatt_init(void) {
     check("chr_add", sd_ble_gatts_characteristic_add(svc_handle, &char_md,
                                                      &attr, &handles));
     m_img_handle = handles.value_handle;
+
+    /* Second characteristic: text config commands (write) */
+    ble_uuid_t cfg_uuid;
+    cfg_uuid.type = BLE_UUID_TYPE_BLE;
+    cfg_uuid.uuid = 0xFFF2;
+    ble_gatts_char_md_t cmd_md;
+    zero_bytes(&cmd_md, sizeof(cmd_md));
+    cmd_md.char_props.write = 1;
+    cmd_md.char_props.write_wo_resp = 1;
+    ble_gatts_attr_t cmd_attr;
+    zero_bytes(&cmd_attr, sizeof(cmd_attr));
+    cmd_attr.p_attr_md = &attr_md;
+    cmd_attr.p_uuid = &cfg_uuid;
+    cmd_attr.init_len = 1;
+    cmd_attr.init_offs = 0;
+    cmd_attr.max_len = 20;
+    static uint8_t cmd_val = 0;
+    cmd_attr.p_value = &cmd_val;
+    ble_gatts_char_handles_t cmd_handles;
+    check("cfg_chr", sd_ble_gatts_characteristic_add(svc_handle, &cmd_md,
+                                                     &cmd_attr, &cmd_handles));
+    m_cfg_handle = cmd_handles.value_handle;
+}
+
+/* Handle one config command from characteristic 0xFFF2. */
+static void cfg_write(const uint8_t *p, uint16_t len) {
+    char buf[24];
+    if (len > sizeof(buf) - 1) len = (uint16_t)(sizeof(buf) - 1);
+    for (uint16_t i = 0; i < len; i++) buf[i] = (char)p[i];
+    buf[len] = 0;
+
+    if (len == 4 && buf[0] == 's' && buf[1] == 'a' && buf[2] == 'v' && buf[3] == 'e') {
+        uint32_t err = cfg_save();
+        if (err == 0) {
+            hwuart_puts("CFG saved\r\n");
+        } else {
+            hwuart_puts("CFG save FAILED 0x");
+            hwuart_put_hex32(err);
+            hwuart_puts("\r\n");
+        }
+        return;
+    }
+    int r = cfg_apply_text(buf, len);
+    if (r < 0) {
+        hwuart_puts("CFG bad value\r\n");
+        return;
+    }
+    if (r == 0) {
+        hwuart_puts("CFG unknown key\r\n");
+        return;
+    }
+    hwuart_puts("CFG ");
+    hwuart_puts(buf);
+    hwuart_puts("\r\n");
+    apply_gap_config();
+    /* Re-advertise so name/address changes are visible immediately -
+     * but only when idle: while connected a restart is a no-op and the
+     * disconnect handler will pick the new values up anyway. */
+    if (m_conn_handle == BLE_CONN_HANDLE_INVALID) {
+        (void)sd_ble_gap_adv_stop();
+        start_advertising();
+    }
 }
 
 static void ble_init(void) {
@@ -307,17 +460,21 @@ static void ble_init(void) {
     check("constlat", sd_power_mode_set(NRF_POWER_MODE_CONSTLAT));
 
     static const ble_gap_conn_sec_mode_t sec_mode = { 0 };  /* open, no SM */
-    check("name", sd_ble_gap_device_name_set(&sec_mode, (const uint8_t *)"EINK-N51802", 11));
+    (void)sec_mode;
+    apply_gap_config();        /* device name + optional address override */
 
 
     gatt_init();
     start_advertising();
-    hwuart_puts("BLE advertising: EINK-N51802 (svc FFF0, write FFF1)\n");
+    hwuart_puts("BLE advertising: ");
+    hwuart_puts(g_cfg->name);
+    hwuart_puts(" (svc FFF0 img / FFF2 cfg)\n");
 }
 
 
 /* ---------- main ---------- */
 int main(void) {
+    g_cfg = cfg_init();                   /* flash config or defaults */
     clock_start_hfclk();
     lfclk_start_rc();                     /* LFCLK required by RTC1     */
     rtc_init();                           /* RTC1: ms time base         */
@@ -325,6 +482,19 @@ int main(void) {
     wake_input_init();
     uart_init();
     hwuart_puts("\r\nEINK-N51802 boot (WFT0420CZ15 400x300)\r\n");
+    hwuart_puts(" CFG ");
+    hwuart_puts(cfg_from_flash() ? "flash" : "defaults");
+    hwuart_puts(" name=");
+    hwuart_puts(g_cfg->name);
+    hwuart_puts(" adv=");
+    hwuart_put_u32(g_cfg->adv_timeout_s);
+    hwuart_puts(" idle=");
+    hwuart_put_u32(g_cfg->idle_rounds);
+    hwuart_puts(" wake=");
+    hwuart_put_u32(g_cfg->wake_enable);
+    hwuart_puts(" addr=");
+    hwuart_put_u32(g_cfg->addr_set);
+    hwuart_puts("\r\n");
     hwuart_puts(" RESETREAS=0x");
     hwuart_put_hex32(REG(POWER_BASE, POWER_RESETREAS));
     hwuart_puts("\r\n");
@@ -339,13 +509,26 @@ int main(void) {
      * MISO, which this board does not route, so the variant is fixed
      * here. Set EINK_V2 instead to try the UC8179 batch. */
     eink_set_variant(EINK_V1);
-    hwuart_puts("E-ink: UC8176 init\r\n");
-    eink_show_test_pattern();             /* blocking, full refresh     */
-    hwuart_puts("  status=0x");
-    hwuart_put_hex32(eink_last_status);
-    hwuart_puts(" waited_ms=");
-    hwuart_put_u32(eink_refresh_wait_ms);
-    hwuart_puts("\r\n");
+    if (g_cfg->boot_refresh) {
+        hwuart_puts("E-ink: UC8176 init\r\n");
+        m_panel_busy = 1;
+        eink_show_test_pattern();         /* blocking, full refresh     */
+        m_panel_busy = 0;
+        hwuart_puts("  status=0x");
+        hwuart_put_hex32(eink_last_status);
+        hwuart_puts(" busy_low=");
+        hwuart_put_u32(eink_busy_low_samples);
+        hwuart_puts(" first_ms=");
+        hwuart_put_u32(eink_busy_first_ms);
+        hwuart_puts(" release_ms=");
+        hwuart_put_u32(eink_busy_release_ms);
+        hwuart_puts(" waited_ms=");
+        hwuart_put_u32(eink_refresh_wait_ms);
+        hwuart_puts("\r\n");
+    } else {
+        /* Keep whatever the panel already shows (e-ink is bistable). */
+        hwuart_puts("E-ink: boot refresh disabled\r\n");
+    }
     eink_sleep();
     led_set(PIN_LED3, 0);                 /* refresh finished   */
     hwuart_puts("E-ink test pattern done\r\n");
@@ -358,6 +541,7 @@ int main(void) {
     for (;;) {
         /* While the panel is refreshing, poll instead of sleeping in
          * sd_app_evt_wait() so BLE events keep being served. */
+        led_tick();
         if (m_img_state == 3) {
             if ((int32_t)(rtc_ms() - m_refresh_until) >= 0) {
                 eink_refresh_finish();
@@ -370,7 +554,9 @@ int main(void) {
                 delay_ms(10);
             }
         } else {
-            sd_app_evt_wait();
+            /* Poll instead of sd_app_evt_wait() so the LED animation keeps
+             * running; the radio still wakes us every advertising event. */
+            delay_ms(20);
         }
         for (;;) {
             uint16_t len = (uint16_t)sizeof(evt_buf);
@@ -382,7 +568,8 @@ int main(void) {
 #if ENABLE_P9_WAKE
                 /* Six silent 5 s advertising periods are enough; after that
                  * use the RF-coil P9 input as the hardware wake source. */
-                if (m_idle_advertising_rounds >= 6) {
+                if (g_cfg->wake_enable &&
+                    m_idle_advertising_rounds >= g_cfg->idle_rounds) {
                     enter_system_off_for_wake();
                 }
 #endif
@@ -403,6 +590,8 @@ int main(void) {
                 ble_gatts_evt_write_t *wr = &pev->evt.gatts_evt.params.write;
                 if (wr->handle == m_img_handle) {
                     img_write(wr->data, wr->len);
+                } else if (wr->handle == m_cfg_handle) {
+                    cfg_write(wr->data, wr->len);
                 }
             }
         }

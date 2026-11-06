@@ -23,7 +23,7 @@ OUT = os.path.join(WS, "bin")
 OBJ = os.path.join(WS, "build", "obj")
 APP_ORIGIN = 0x18000
 
-SRCS = ["src/startup.c", "src/main.c", "src/eink.c"]
+SRCS = ["src/startup.c", "src/main.c", "src/eink.c", "src/config.c"]
 CFLAGS = [
     "-mcpu=cortex-m0", "-mthumb", "-O2", "-g",
     "-ffreestanding", "-nostdlib", "-fno-builtin", "-fno-stack-protector",

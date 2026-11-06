@@ -244,10 +244,12 @@ static void reset_v1(void) {
     delay_ms(180);
 }
 
+static uint32_t epd_wait_ready(uint32_t timeout_ms);   /* below */
+
 static void init_v1(void) {
     reset_v1();
     cmd(0x04);            /* power on */
-    epd_wait_busy(500);   /* no status line here: fixed fallback */
+    epd_wait_ready(5000);    /* power-on ramp is ~1 s */
     cmd(0x00);            /* panel setting */
     dat(0x0F);
     dat(0x0D);
@@ -256,6 +258,60 @@ static void init_v1(void) {
 void eink_init(void) {
     if (eink_variant == EINK_V2) init_v2();
     else                         init_v1();
+}
+
+/* Wait until the panel reports ready via the 0x71 status byte.
+ * Measured on this board: after 0x12 the busy flag is low from the first
+ * poll and clears after ~14.2 s, so this replaces the fixed 20 s wait and
+ * saves ~6 s per refresh. */
+volatile uint32_t eink_busy_ms;
+
+static uint32_t epd_wait_ready(uint32_t timeout_ms) {
+    uint32_t t0 = rtc_ms();
+    uint32_t polls = 0;
+    for (;;) {
+        cmd(0x71);
+        uint32_t st = epd_read_byte();
+        eink_last_status = st;
+        polls++;
+        if (st & 1UL) break;                       /* bit0 = ready */
+        if ((rtc_ms() - t0) >= timeout_ms) break;
+        delay_ms(10);
+    }
+    eink_busy_polls = polls;
+    eink_busy_ms = rtc_ms() - t0;
+    return eink_busy_ms;
+}
+
+/* Probe the 0x71 status while the panel refreshes: does bit0 (busy flag)
+ * actually go low while it works? The stock firmware polls it but leaves
+ * PIN_CNF[10]=0 (input buffer disconnected) so it always read 0 and fell
+ * back to a fixed timeout. We now read it for real, so measure before
+ * trusting it. */
+volatile uint32_t eink_busy_low_samples;   /* polls that reported "busy"  */
+volatile uint32_t eink_busy_first_ms;      /* first busy report           */
+volatile uint32_t eink_busy_release_ms;    /* when it reported ready again*/
+
+static uint32_t probe_busy(uint32_t duration_ms) {
+    uint32_t t0 = rtc_ms();
+    uint32_t low = 0, first = 0xFFFFFFFFUL, rel = 0xFFFFFFFFUL, last = 0;
+    while ((rtc_ms() - t0) < duration_ms) {
+        cmd(0x71);
+        last = epd_read_byte();
+        eink_last_status = last;
+        if ((last & 1UL) == 0) {
+            low++;
+            if (first == 0xFFFFFFFFUL) first = rtc_ms() - t0;
+        } else if (low && rel == 0xFFFFFFFFUL) {
+            rel = rtc_ms() - t0;
+        }
+        delay_ms(100);
+    }
+    eink_busy_low_samples = low;
+    eink_busy_first_ms = first;
+    eink_busy_release_ms = rel;
+    eink_refresh_wait_ms = rtc_ms() - t0;
+    return rel;
 }
 
 static void turn_on_display(void) {
@@ -268,13 +324,12 @@ static void turn_on_display(void) {
     }
     /* UC8176: refresh, then the stock shutdown tail. */
     cmd(0x12);            /* display refresh */
-    delay_ms(100);
-    refresh_and_measure(20000);
+    epd_wait_ready(25000);   /* real busy handshake (~14.2 s here) */
     cmd(0x50);            /* VCOM and data interval */
     dat(0xF7);
     delay_ms(100);
     cmd(0x02);            /* power off */
-    epd_wait_busy(5000);
+    epd_wait_ready(5000);
     delay_ms(200);
     cmd(0x07);            /* deep sleep */
     dat(0xA5);
@@ -480,7 +535,11 @@ void eink_sleep(void) {
 /* ---- streaming API (content over BLE) -------------------------------
  * The controller keeps its write pointer while CS toggles, so bytes can
  * arrive at any pace: each BLE write is streamed straight through.
+ * A full frame is 15,000 bytes per plane; a partial update streams only
+ * the pixels of the requested rectangle (see eink_partial_begin).
  */
+static uint32_t m_plane_bytes;      /* bytes expected for the open plane */
+
 void eink_stream_begin(void) {
     if (eink_variant == EINK_V2) {
         eink_reset();
@@ -488,6 +547,39 @@ void eink_stream_begin(void) {
     } else {
         init_v1();
     }
+    m_plane_bytes = (uint32_t)EPD_ROWBYTES * EPD_HEIGHT;
+    cmd((eink_variant == EINK_V2) ? 0x24 : 0x10);
+}
+
+/* Window the controller's RAM to a rectangle, then open the black plane.
+ * Commands: 0x44 = X start/end (in bytes, i.e. pixels/8), 0x45 = Y
+ * start/end (in pixels, 9 bits each), 0x4E/0x4F = cursors.
+ * The panel still needs a full refresh afterwards (the red pigment has no
+ * partial waveform), but only the rectangle has to travel over BLE. */
+void eink_partial_begin(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (x >= EPD_WIDTH || y >= EPD_HEIGHT) { eink_stream_begin(); return; }
+    if (x + w > EPD_WIDTH) w = EPD_WIDTH - x;
+    if (y + h > EPD_HEIGHT) h = EPD_HEIGHT - y;
+    if (w == 0 || h == 0) { eink_stream_begin(); return; }
+
+    if (eink_variant == EINK_V2) { eink_reset(); init_v2(); }
+    else                         { init_v1(); }
+
+    cmd(0x44);
+    dat((uint8_t)(x / 8));
+    dat((uint8_t)((x + w - 1) / 8));
+    cmd(0x45);
+    dat((uint8_t)(y & 0xFF));
+    dat((uint8_t)(y >> 8));
+    dat((uint8_t)((y + h - 1) & 0xFF));
+    dat((uint8_t)((y + h - 1) >> 8));
+    cmd(0x4E);
+    dat((uint8_t)(x / 8));
+    cmd(0x4F);
+    dat((uint8_t)(y & 0xFF));
+    dat((uint8_t)(y >> 8));
+
+    m_plane_bytes = ((w + 7) / 8) * h;
     cmd((eink_variant == EINK_V2) ? 0x24 : 0x10);
 }
 
@@ -504,7 +596,8 @@ void eink_stream_end(void) {
 }
 
 uint32_t eink_plane_bytes(void) {
-    return (uint32_t)EPD_ROWBYTES * EPD_HEIGHT;
+    if (m_plane_bytes == 0) return (uint32_t)EPD_ROWBYTES * EPD_HEIGHT;
+    return m_plane_bytes;
 }
 
 /* ---- non-blocking refresh, used by the BLE path ---------------------

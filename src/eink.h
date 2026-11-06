@@ -36,6 +36,7 @@ void eink_show_test_pattern(void);
  *   eink_stream_end()          refresh (0x12), power off, deep sleep
  * The caller feeds EPD_BYTES bytes (400*300/8 = 15000) per plane. */
 void eink_stream_begin(void);
+void eink_partial_begin(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 void eink_stream_byte(uint8_t b);
 void eink_stream_begin_red(void);
 void eink_stream_end(void);
@@ -55,6 +56,9 @@ extern volatile uint32_t eink_busy_seen;
 extern volatile uint32_t eink_busy_high_samples;
 extern volatile uint32_t eink_refresh_wait_ms;
 extern volatile uint32_t eink_last_status;
+extern volatile uint32_t eink_busy_low_samples;
+extern volatile uint32_t eink_busy_first_ms;
+extern volatile uint32_t eink_busy_release_ms;
 
 /* Controller generation for WFT0420CZ15 (Waveshare 4.2" B):
  *   EINK_V2 = UC8179 (new panel batch)

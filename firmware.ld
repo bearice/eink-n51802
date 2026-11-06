@@ -35,6 +35,13 @@ SECTIONS
     __data_end__ = .;
   } > RAM AT> FLASH
 
+  /* Load address of the end of the .data initialiser image in FLASH.
+   * This MUST be derived from .data's load address: a bare `__etext = .`
+   * placed after the sections points into RAM, so startup copied garbage
+   * over .data and every initialised global (e.g. m_conn_handle) started
+   * out with whatever happened to be there. */
+  __etext = LOADADDR(.data) + SIZEOF(.data);
+
   .bss : ALIGN(4)
   {
     __bss_start__ = .;
@@ -50,5 +57,3 @@ SECTIONS
     *(.eh_frame*)
   }
 }
-
-PROVIDE(__etext = .);
