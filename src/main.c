@@ -46,13 +46,28 @@ static void led_set(uint32_t pin, int on) { gpio_write(pin, on ? 0 : 1); }
  * end of the coil grounded, and a 150 kOhm pull-down on P9. The nRF51802
  * cannot decode NFC, but SYSTEM OFF retains GPIO SENSE configuration:
  * a positive RF excursion that crosses the input threshold wakes the MCU
- * and restarts it as a normal reset. */
+ * and restarts it as a normal reset.
+ *
+ * DISABLED BY DEFAULT. Measured on this board, a phone touching the coil
+ * only produces ~0.5 V at P9, while the nRF51 digital input threshold is
+ * 0.7 x VDD = 2.31 V. With SYSTEM OFF armed the tag would sleep forever
+ * and need a power cycle (or SWD) to come back, so the firmware keeps
+ * advertising instead. Enable with -DENABLE_P9_WAKE=1 once the coil is
+ * tuned (resonant capacitor) or a detector/comparator is fitted.
+ */
+#ifndef ENABLE_P9_WAKE
+#define ENABLE_P9_WAKE 0
+#endif
+
 static uint32_t m_idle_advertising_rounds;
 
 static void wake_input_init(void) {
+    /* Harmless with the wake path disabled: SENSE only drives the DETECT
+     * signal, and no GPIOTE/port interrupt is enabled. */
     gpio_dir_input(PIN_WAKE, CFG_INPUT_SENSE_HIGH);
 }
 
+#if ENABLE_P9_WAKE
 static void enter_system_off_for_wake(void) {
     hwuart_puts("BLE idle; P9 wake armed, system off\r\n");
     (void)sd_ble_gap_adv_stop();
@@ -60,6 +75,7 @@ static void enter_system_off_for_wake(void) {
     (void)sd_power_system_off();
     for (;;) { }
 }
+#endif
 
 /* ---------- SoftDevice / BLE ---------- */
 static void sd_assert_handler(uint32_t pc, uint16_t line, const uint8_t *file) {
@@ -332,11 +348,14 @@ int main(void) {
             if (err != NRF_SUCCESS) break;
             uint16_t evt_id = (uint16_t)(evt_buf[0] | (evt_buf[1] << 8));
             if (evt_id == BLE_GAP_EVT_TIMEOUT) {
+                m_idle_advertising_rounds++;
+#if ENABLE_P9_WAKE
                 /* Six silent 5 s advertising periods are enough; after that
                  * use the RF-coil P9 input as the hardware wake source. */
-                if (++m_idle_advertising_rounds >= 6) {
+                if (m_idle_advertising_rounds >= 6) {
                     enter_system_off_for_wake();
                 }
+#endif
                 start_advertising();
             } else if (evt_id == BLE_GAP_EVT_CONNECTED) {
                 m_idle_advertising_rounds = 0;
