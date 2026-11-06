@@ -133,7 +133,7 @@ static void start_advertising(void) {
     check("adv_data", err);
     err = sd_ble_gap_adv_start(&adv_params);
     check("adv_start", err);
-    led_set(PIN_LED2, 1);
+    led_set(PIN_LED2, 0);         /* LED2 off = not connected (just advertising) */
 }
 
 /* freestanding memset (no libc in this image) */
@@ -181,6 +181,7 @@ static void img_finish(void) {
     eink_refresh_start();
     m_img_state = 3;
     m_refresh_until = rtc_ms() + IMG_REFRESH_MS;
+    led_set(PIN_LED3, 1);         /* LED3 on while the panel refreshes */
     hwuart_puts("IMG refresh started\r\n");
     if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
         (void)sd_ble_gap_disconnect(m_conn_handle,
@@ -360,7 +361,7 @@ int main(void) {
             } else if (evt_id == BLE_GAP_EVT_CONNECTED) {
                 m_idle_advertising_rounds = 0;
                 m_conn_handle = ((ble_evt_t *)evt_buf)->evt.gap_evt.conn_handle;
-                led_set(PIN_LED2, 0);     /* solid while connected */
+                led_set(PIN_LED2, 1);     /* LED2 on = BLE connected */
                 hwuart_puts("BLE connected\r\n");
             } else if (evt_id == BLE_GAP_EVT_DISCONNECTED) {
                 hwuart_puts("BLE disconnected\r\n");
