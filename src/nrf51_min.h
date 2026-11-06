@@ -111,6 +111,22 @@
 #define PIN_EPD_BUSY 15 /* NOT used by the stock firmware; unreadable    */
 #define PIN_EPD_BS1 16  /* driven LOW during panel activity, HIGH idle   */
 
+/* ---- GPIOTE, base 0x40006000 ----
+ * Used only for the P9 PORT event: with PIN_CNF.SENSE set, the DETECT
+ * signal raises EVENTS_PORT, which is the only way to notice an RF-coil
+ * pulse while the MCU is running (INTENSET bit 31 = PORT). */
+#define GPIOTE_BASE        0x40006000UL
+#define GPIOTE_TASKS_OUT(n)   (0x000UL + (uint32_t)(n) * 4UL)
+#define GPIOTE_EVENTS_IN(n)   (0x100UL + (uint32_t)(n) * 4UL)
+#define GPIOTE_EVENTS_PORT    0x17CUL
+#define GPIOTE_INTENSET       0x304UL
+#define GPIOTE_INTENCLR       0x308UL
+#define GPIOTE_CONFIG(n)      (0x510UL + (uint32_t)(n) * 4UL)
+#define GPIOTE_POWER          0xFFCUL
+#define GPIOTE_PSEL_PORT      31UL          /* CONFIG.PSEL = 31 -> port event */
+#define GPIOTE_MODE_EVENT     1UL
+#define GPIOTE_IRQN           6
+
 /* ---- tiny helpers ---- */
 static inline void gpio_dir_output(uint32_t pin) {
     REG(GPIO_BASE, GPIO_PIN_CNFG(pin)) = CFG_OUTPUT;

@@ -63,8 +63,30 @@ static uint32_t m_idle_advertising_rounds;
 
 static void wake_input_init(void) {
     /* Harmless with the wake path disabled: SENSE only drives the DETECT
-     * signal, and no GPIOTE/port interrupt is enabled. */
+     * signal, and no GPIOTE/port interrupt is enabled here. */
     gpio_dir_input(PIN_WAKE, CFG_INPUT_SENSE_HIGH);
+}
+
+/* Runtime detection of the RF field on P9 (option A): SENSE -> DETECT ->
+ * GPIOTE PORT event -> this interrupt. The handler only records the event;
+ * the main loop reacts, because restarting advertising must not happen in
+ * interrupt context. */
+static volatile uint32_t m_p9_events;
+
+void GPIOTE_IRQHandler(void) {
+    REG(GPIOTE_BASE, GPIOTE_EVENTS_PORT) = 0;
+    m_p9_events++;
+}
+
+static void p9_irq_init(void) {
+    REG(GPIOTE_BASE, GPIOTE_POWER) = 1UL;
+    REG(GPIOTE_BASE, GPIOTE_CONFIG(0)) =
+        (GPIOTE_PSEL_PORT << 8) | GPIOTE_MODE_EVENT;
+    REG(GPIOTE_BASE, GPIOTE_EVENTS_PORT) = 0UL;
+    REG(GPIOTE_BASE, GPIOTE_INTENSET) = (1UL << 31);   /* PORT interrupt */
+    (void)sd_nvic_ClearPendingIRQ(GPIOTE_IRQN);
+    (void)sd_nvic_SetPriority(GPIOTE_IRQN, 3);
+    (void)sd_nvic_EnableIRQ(GPIOTE_IRQN);
 }
 
 #if ENABLE_P9_WAKE
@@ -323,6 +345,7 @@ int main(void) {
     hwuart_puts("E-ink test pattern done\r\n");
 
     ble_init();
+    p9_irq_init();                        /* P9 field -> GPIOTE PORT */
     led_set(PIN_LED1, 0);                 /* P3 off: idle       */
 
     static uint8_t evt_buf[128] __attribute__((aligned(4)));
@@ -378,6 +401,24 @@ int main(void) {
             }
         }
         { uint32_t soc_evt; (void)sd_evt_get(&soc_evt); }     /* drain SoC events */
+
+        /* P9 reacted to an RF field: keep the tag discoverable and give
+         * visual feedback. Restarting advertising also resets the idle
+         * countdown, so the tag stays awake while a phone is nearby. */
+        if (m_p9_events) {
+            m_p9_events = 0;
+            int connected = (m_conn_handle != BLE_CONN_HANDLE_INVALID);
+            hwuart_puts("P9 field detected\r\n");
+            m_idle_advertising_rounds = 0;
+            if (!connected) start_advertising();
+            for (int i = 0; i < 3; i++) {
+                led_set(PIN_LED2, 1);
+                delay_ms(60);
+                led_set(PIN_LED2, 0);
+                delay_ms(60);
+            }
+            led_set(PIN_LED2, connected);     /* restore indication */
+        }
     }
     return 0;
 }
