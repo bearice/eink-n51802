@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EINK-N51802 配置台</title>
+<style>
+  :root {
+    --bg: #12151a;
+    --panel: #1b2028;
+    --line: #2b323d;
+    --text: #e6ebf2;
+    --muted: #8b97a8;
+    --accent: #4ea1ff;
+    --ok: #34c27a;
+    --warn: #f0a13a;
+    --err: #ef5350;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.55 -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 16px 22px; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: rgba(18,21,26,.92);
+    backdrop-filter: blur(8px); z-index: 5;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .spacer { flex: 1; }
+  main {
+    display: grid; gap: 16px; padding: 18px 22px 60px;
+    grid-template-columns: minmax(320px, 1fr) minmax(320px, 420px);
+    align-items: start;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px 18px;
+  }
+  section h2 {
+    font-size: 13px; margin: 0 0 14px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+  }
+  label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: #0e1116; color: var(--text);
+    font: inherit;
+  }
+  input:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .checks { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; }
+  .checks label { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--text); font-size: 13px; }
+  button {
+    font: inherit; padding: 8px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: #222a34; color: var(--text);
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #07121f; font-weight: 600; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    background: #0e1116; border: 1px solid var(--line); font-size: 12px; color: var(--muted);
+  }
+  canvas { image-rendering: pixelated; background: #fff; border-radius: 6px; max-width: 100%; }
+  #preview { width: 100%; height: auto; }
+  .canvaswrap { display: grid; place-items: center; padding: 10px; background: #0e1116; border-radius: 10px; border: 1px solid var(--line); }
+  #log {
+    font: 12px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    background: #0b0e12; border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; height: 190px; overflow: auto; white-space: pre-wrap;
+  }
+  #log .t { color: var(--muted); }
+  #log .e { color: var(--err); }
+  #log .k { color: var(--ok); }
+  #log .w { color: var(--warn); }
+  progress { width: 100%; height: 8px; margin-top: 10px; }
+  .meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>EINK-N51802 配置台</h1>
+  <span class="dot" id="dot"></span>
+  <span class="pill" id="conn">未连接</span>
+  <span class="spacer"></span>
+  <span class="pill" id="devname">—</span>
+  <button id="btnConnect">连接设备</button>
+</header>
+
+<main>
+  <div style="display:grid; gap:16px">
+    <section>
+      <h2>屏幕 / 控制器</h2>
+      <select id="panel"></select>
+      <div class="meta">
+        <span class="pill" id="res">—</span>
+        <span class="pill" id="frame">—</span>
+        <span class="pill" id="ms">—</span>
+      </div>
+      <p class="hint">
+        换屏后要先应用配置，再复位设备才会用新驱动重新初始化面板。
+        SSD1680 与 UC8151 是两种互不兼容的控制器，试错时先切换面板再看屏幕。
+      </p>
+    </section>
+
+    <section>
+      <h2>参数</h2>
+      <div class="row">
+        <div>
+          <label for="name">设备名（≤15 字节）</label>
+          <input type="text" id="name" maxlength="15" placeholder="EINK-N51802">
+        </div>
+        <div>
+          <label for="adv">广播超时（秒，1–180）</label>
+          <input type="number" id="adv" min="1" max="180" step="1">
+        </div>
+      </div>
+      <label for="idle">静置轮数（无连接时广播多少轮后进 SYSTEM OFF）</label>
+      <input type="number" id="idle" min="0" max="600" step="1">
+      <div class="checks">
+        <label><input type="checkbox" id="boot"> 复位后重画开机信息页</label>
+        <label><input type="checkbox" id="wake"> 允许 P9 关机唤醒</label>
+      </div>
+      <div class="actions">
+        <button class="primary" id="btnApply" disabled>应用并保存</button>
+        <button id="btnApplyOnly" disabled>仅应用（不写 flash）</button>
+        <button id="btnRead" disabled>读取当前配置</button>
+        <button id="btnReset" disabled>恢复默认</button>
+      </div>
+      <p class="hint">不勾“保存”时改动只在内存里，复位即恢复 flash 中的旧值。</p>
+    </section>
+  </div>
+
+  <div style="display:grid; gap:16px">
+    <section>
+      <h2>图片</h2>
+      <label for="file">选择图片（会等比缩放并做抖动）</label>
+      <input type="file" id="file" accept="image/*">
+      <div class="row" style="margin-top:10px">
+        <div>
+          <label for="dither">抖动算法</label>
+          <select id="dither">
+            <option value="bayer">Bayer 4×4（推荐）</option>
+            <option value="none">无（纯阈值）</option>
+          </select>
+        </div>
+        <div>
+          <label for="redthr">红色判定强度</label>
+          <select id="redthr">
+            <option value="40">标准</option>
+            <option value="20">宽松</option>
+            <option value="70">严格</option>
+          </select>
+        </div>
+      </div>
+      <div class="canvaswrap" style="margin-top:12px">
+        <canvas id="preview" width="128" height="296"></canvas>
+      </div>
+      <div class="actions">
+        <button class="primary" id="btnUpload" disabled>上传并刷新</button>
+      </div>
+      <progress id="prog" value="0" max="100" style="display:none"></progress>
+      <p class="hint" id="uploadHint">上传后设备会断开连接并刷新面板，刷新完成前不要重新连接。</p>
+    </section>
+
+    <section>
+      <h2>日志</h2>
+      <div id="log"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+const SVC = 0xfff0, IMG = 0xfff1, CFG = 0xfff2;
+const PACK = 19;                       // 20-byte characteristic, 1 opcode byte
+
+const PANELS = [
+  { i: 0, part: "WFT0420CZ15",    ctrl: "UC8176",  w: 400, h: 300, ms: 20000 },
+  { i: 1, part: "WFT0420CZ15",    ctrl: "UC8179",  w: 400, h: 300, ms: 25000 },
+  { i: 2, part: "HINK-E029A01",   ctrl: "SSD1680", w: 128, h: 296, ms: 32000 },
+  { i: 3, part: "HINK-E029A01",   ctrl: "UC8151",  w: 128, h: 296, ms: 32000 },
+  { i: 4, part: "HINK-E0213A22-A0", ctrl: "SSD1680", w: 122, h: 250, ms: 20000 },
+];
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+let device = null, imgChar = null, cfgChar = null;
+let workCanvas = null, workCtx = null, srcImage = null;
+
+/* ---------- logging ---------- */
+function log(msg, cls) {
+  const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  const line = document.createElement("div");
+  line.innerHTML = `<span class="t">${t}</span> <span class="${cls || ""}"></span>`;
+  line.lastChild.textContent = msg;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/* ---------- panel helpers ---------- */
+function currentPanel() { return PANELS[Number($("panel").value)]; }
+function rowBytes(p) { return (p.w + 7) >> 3; }
+function planeBytes(p) { return rowBytes(p) * p.h; }
+
+function syncPanelInfo() {
+  const p = currentPanel();
+  $("res").textContent = `${p.part} · ${p.ctrl}`;
+  $("frame").textContent = `${p.w}×${p.h} · 每平面 ${planeBytes(p)} B`;
+  $("ms").textContent = `整帧 ${planeBytes(p) * 2} B · 刷新≈${(p.ms / 1000).toFixed(0)} s`;
+  resizeCanvas();
+}
+
+function resizeCanvas() {
+  const p = currentPanel();
+  workCanvas = document.createElement("canvas");
+  workCanvas.width = p.w; workCanvas.height = p.h;
+  workCtx = workCanvas.getContext("2d", { willReadFrequently: true });
+  workCtx.fillStyle = "#fff"; workCtx.fillRect(0, 0, p.w, p.h);
+
+  const pv = $("preview");
+  pv.width = p.w; pv.height = p.h;
+  pv.style.maxWidth = p.w > 200 ? "100%" : "180px";
+  if (srcImage) drawSource();
+  else renderPreview();
+}
+
+/* ---------- connection ---------- */
+async function connect() {
+  try {
+    log("请求设备…");
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "EINK" }],
+      optionalServices: [SVC],
+    });
+    log(`已选择 ${device.name || device.id}`);
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    imgChar = await svc.getCharacteristic(IMG);
+    cfgChar = await svc.getCharacteristic(CFG);
+
+    $("dot").classList.add("on");
+    $("conn").textContent = "已连接";
+    $("devname").textContent = device.name || device.id;
+    setEnabled(true);
+    log("连接成功", "k");
+    try {
+      await cfgChar.startNotifications();
+      cfgChar.addEventListener("characteristicvaluechanged", onCfgEvent);
+      log("已订阅刷新完成通知");
+    } catch (e) {
+      log("订阅通知失败（不影响传图）：" + e.message, "w");
+    }
+    await readStatus();
+  } catch (e) {
+    log("连接失败：" + e.message, "e");
+  }
+}
+
+function onDisconnected() {
+  $("dot").classList.remove("on");
+  $("conn").textContent = "已断开";
+  setEnabled(false);
+  imgChar = cfgChar = null;
+  log("连接已断开", "w");
+}
+
+function setEnabled(on) {
+  for (const id of ["btnApply", "btnApplyOnly", "btnRead", "btnReset", "btnUpload"]) {
+    $(id).disabled = !on;
+  }
+  $("btnConnect").textContent = on ? "重新连接" : "连接设备";
+}
+
+/* 0xFFF2 notifies 0x01 once the panel has finished updating. */
+function onCfgEvent(e) {
+  const b = new Uint8Array(e.target.value.buffer, e.target.value.byteOffset, e.target.value.byteLength);
+  if (b.length === 1 && b[0] === 0x01) {
+    log("面板刷新完成 ✔", "k");
+    panelDone();
+  } else if (b.length >= 20) {
+    applyStatus(b);          // the firmware re-publishes its config snapshot
+  }
+}
+
+let doneTimer = null;
+function panelDone() {
+  if (doneTimer) { clearTimeout(doneTimer); doneTimer = null; }
+  $("prog").value = 100;
+  $("btnUpload").disabled = false;
+  $("uploadHint").textContent = "上传后设备会断开连接并刷新面板，刷新完成前不要重新连接。";
+}
+
+/* ---------- config ---------- */
+function applyStatus(b) {
+  const ver = b[4], panel = b[5], flags = b[6], adv = b[7], idle = b[8];
+  let name = "";
+  for (let i = 0; i < 11 && b[9 + i]; i++) name += String.fromCharCode(b[9 + i]);
+
+    if (PANELS[panel]) $("panel").value = String(panel);
+    $("name").value = name;
+    $("adv").value = adv || 5;
+    $("idle").value = idle;
+    $("boot").checked = !!(flags & 1);
+    $("wake").checked = !!(flags & 2);
+  syncPanelInfo();
+  log(`配置：cfg v${ver} panel=${panel} name=${name} adv=${adv} idle=${idle}`, "k");
+}
+
+async function readStatus() {
+  if (!cfgChar) return;
+  try {
+    const dv = await cfgChar.readValue();
+    const b = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+    if (b.length < 20 || String.fromCharCode(b[0], b[1], b[2], b[3]) !== "EINK") {
+      log("状态包格式不认识（长度 " + b.length + "）", "w");
+      return;
+    }
+    applyStatus(b);
+  } catch (e) {
+    log("读取失败：" + e.message, "e");
+  }
+}
+
+async function writeCmd(text) {
+  if (!cfgChar) throw new Error("未连接");
+  let bytes = new TextEncoder().encode(text);
+  if (bytes.length > 20) { log(`命令过长已跳过：${text}`, "w"); return; }
+  await cfgChar.writeValueWithResponse(bytes);
+  log("→ " + text);
+}
+
+function collectCommands() {
+  const cmds = [];
+  const p = currentPanel();
+  const name = $("name").value.trim();
+  const adv = Number($("adv").value);
+  const idle = Number($("idle").value);
+
+  if (name) cmds.push("name=" + name.slice(0, 15));
+  if (adv >= 1 && adv <= 180) cmds.push("adv=" + adv);
+  if (idle >= 0 && idle <= 600) cmds.push("idle=" + idle);
+  cmds.push("boot=" + ($("boot").checked ? 1 : 0));
+  cmds.push("wake=" + ($("wake").checked ? 1 : 0));
+  cmds.push("panel=" + p.i);
+  return cmds;
+}
+
+async function applyConfig(save) {
+  try {
+    for (const c of collectCommands()) {
+      await writeCmd(c);
+      await sleep(120);
+    }
+    if (save) {
+      await writeCmd("save");
+      log("已写入 flash", "k");
+      await sleep(300);
+    } else {
+      log("已应用（仅内存）", "w");
+    }
+    await sleep(300);
+    await readStatus();
+  } catch (e) {
+    log("应用失败：" + e.message, "e");
+  }
+}
+
+async function resetDefaults() {
+  try {
+    await writeCmd("reset");
+    await sleep(200);
+    await readStatus();
+    log("已恢复默认值（还需 “应用并保存” 才会写 flash）", "w");
+  } catch (e) {
+    log("失败：" + e.message, "e");
+  }
+}
+
+/* ---------- image ---------- */
+function loadFile(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    srcImage = img;
+    drawSource();
+    log(`已载入 ${file.name}（${img.width}×${img.height}）`);
+    URL.revokeObjectURL(url);
+  };
+  img.onerror = () => { log("图片解码失败", "e"); URL.revokeObjectURL(url); };
+  img.src = url;
+}
+
+function drawSource() {
+  const p = currentPanel();
+  const s = Math.min(p.w / srcImage.width, p.h / srcImage.height);
+  const dw = Math.max(1, Math.round(srcImage.width * s));
+  const dh = Math.max(1, Math.round(srcImage.height * s));
+  workCtx.fillStyle = "#fff";
+  workCtx.fillRect(0, 0, p.w, p.h);
+  workCtx.drawImage(srcImage, Math.round((p.w - dw) / 2), Math.round((p.h - dh) / 2), dw, dh);
+  renderPreview();
+}
+
+const BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+
+/* Quantise the work canvas to the three inks; returns {black, red} bytes. */
+function buildPlanes() {
+  const p = currentPanel();
+  const rb = rowBytes(p);
+  const black = new Uint8Array(rb * p.h);
+  const red = new Uint8Array(rb * p.h);
+  const src = workCtx.getImageData(0, 0, p.w, p.h).data;
+  const mode = $("dither").value;
+  const redThr = Number($("redthr").value);
+
+  for (let y = 0; y < p.h; y++) {
+    for (let xb = 0; xb < rb; xb++) {
+      let bb = 0, rbts = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        const x = xb * 8 + bit;
+        const idx = (y * p.w + x) * 4;
+        if (x >= p.w) { bb |= 1 << (7 - bit); continue; }   // outside the glass
+        const r = src[idx], g = src[idx + 1], b = src[idx + 2];
+        const isRed = r > 110 && r - Math.max(g, b) > redThr;
+        if (isRed) { rbts |= 1 << (7 - bit); bb |= 1 << (7 - bit); continue; }
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        const thr = mode === "bayer" ? (BAYER[y % 4][x % 4] + 0.5) * 255 / 16 : 128;
+        if (lum >= thr) bb |= 1 << (7 - bit);               // 1 = no black
+      }
+      black[y * rb + xb] = bb;
+      red[y * rb + xb] = rbts;
+    }
+  }
+  return { black, red };
+}
+
+function renderPreview() {
+  const p = currentPanel();
+  const pv = $("preview");
+  pv.width = p.w; pv.height = p.h;
+  const ctx = pv.getContext("2d");
+  const { black, red } = buildPlanes();
+  const out = ctx.createImageData(p.w, p.h);
+  const rb = rowBytes(p);
+  for (let y = 0; y < p.h; y++) {
+    for (let x = 0; x < p.w; x++) {
+      const byte = black[y * rb + (x >> 3)];
+      const isBlack = ((byte >> (7 - (x & 7))) & 1) === 0;
+      const rbyte = red[y * rb + (x >> 3)];
+      const isRed = ((rbyte >> (7 - (x & 7))) & 1) === 1;
+      const o = (y * p.w + x) * 4;
+      let c = [255, 255, 255];
+      if (isRed) c = [200, 30, 30];
+      else if (isBlack) c = [0, 0, 0];
+      out.data[o] = c[0]; out.data[o + 1] = c[1]; out.data[o + 2] = c[2]; out.data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(out, 0, 0);
+}
+
+async function writeImage(bytes) {
+  let n = 0;
+  for (let i = 0; i < bytes.length; i += PACK) {
+    const len = Math.min(PACK, bytes.length - i);
+    const pkt = new Uint8Array(1 + len);
+    pkt[0] = 0x02;
+    pkt.set(bytes.subarray(i, i + len), 1);
+    await imgChar.writeValueWithoutResponse(pkt);
+    if (++n % 16 === 0) await sleep(3);
+  }
+  return n;
+}
+
+async function upload() {
+  if (!imgChar) return;
+  const p = currentPanel();
+  $("btnUpload").disabled = true;
+  $("prog").style.display = "block";
+  $("prog").value = 0;
+  try {
+    const { black, red } = buildPlanes();
+    log(`开始上传 ${p.part} ${p.w}×${p.h}：每平面 ${black.length} B`);
+
+    await imgChar.writeValueWithoutResponse(new Uint8Array([0x01]));
+    const n1 = await writeImage(black);
+    $("prog").value = 50;
+    log(`黑白平面已发送（${n1} 包）`);
+
+    await imgChar.writeValueWithoutResponse(new Uint8Array([0x03]));
+    const n2 = await writeImage(red);
+    $("prog").value = 90;
+    log(`红色平面已发送（${n2} 包）`);
+
+    try {
+      await imgChar.writeValueWithoutResponse(new Uint8Array([0x04]));
+    } catch (e) {
+      log("（设备已断开）" + e.message, "w");
+    }
+    $("prog").value = 95;
+    log(`刷新已触发，等待面板（约 ${(p.ms / 1000).toFixed(0)} s）…连接保持不断开`, "k");
+    $("uploadHint").textContent = "正在刷新，完成后会自动通知；期间连接保持。";
+    if (doneTimer) clearTimeout(doneTimer);
+    doneTimer = setTimeout(() => {
+      log("等待完成通知超时（面板可能仍在刷新，连上可再点“读取当前配置”）", "w");
+      panelDone();
+    }, p.ms + 30000);
+  } catch (e) {
+    log("上传失败：" + e.message, "e");
+    $("btnUpload").disabled = false;
+  } finally {
+    setTimeout(() => { $("prog").style.display = "none"; }, 4000);
+  }
+}
+
+/* ---------- misc ---------- */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ---------- init ---------- */
+(function init() {
+  const sel = $("panel");
+  for (const p of PANELS) {
+    const o = document.createElement("option");
+    o.value = String(p.i);
+    o.textContent = `${p.part} · ${p.ctrl} · ${p.w}×${p.h}`;
+    sel.appendChild(o);
+  }
+  sel.value = "2";
+
+  /* sensible defaults until the tag answers with its real configuration */
+  $("name").value = "EINK-N51802";
+  $("adv").value = 5;
+  $("idle").value = 6;
+  $("boot").checked = true;
+
+  sel.addEventListener("change", syncPanelInfo);
+  $("dither").addEventListener("change", () => { if (srcImage) drawSource(); else renderPreview(); });
+  $("redthr").addEventListener("change", () => { if (srcImage) drawSource(); else renderPreview(); });
+  $("file").addEventListener("change", (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+
+  $("btnConnect").addEventListener("click", connect);
+  $("btnApply").addEventListener("click", () => applyConfig(true));
+  $("btnApplyOnly").addEventListener("click", () => applyConfig(false));
+  $("btnRead").addEventListener("click", readStatus);
+  $("btnReset").addEventListener("click", resetDefaults);
+  $("btnUpload").addEventListener("click", upload);
+
+  if (!navigator.bluetooth) {
+    log("这个浏览器没有 Web Bluetooth：请用桌面版 Chrome / Edge，并通过 http://localhost 或 https 打开。", "e");
+  }
+  syncPanelInfo();
+  log("就绪。先点右上角“连接设备”。");
+})();
+</script>
+</body>
+</html>
