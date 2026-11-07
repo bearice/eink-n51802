@@ -165,8 +165,8 @@ static void start_advertising(void) {
         0x02, 0x01, 0x06,                         /* Flags: LE limited */
         0x0B, 0xFF, 0x59, 0x00,                   /* Manufacturer, 11 bytes w/ type */
         'E', 'I', 'N', 'K',                       /*  ... 4 chars */
-        0x02, 0xB0,                               /*  ... panel marker WFT0420CZ15 */
-        0x01, 0x01,                               /*  ... SW version 1.1 */
+        0xB1, 0x02,                               /*  ... panel marker */
+        0x00, 0x02,                               /*  ... SW version 2.0 */
     };
     /* Scan response carries the configured name, built at run time so a
      * config change actually reaches the air. Layout: [len][0x09][name]. */
@@ -210,16 +210,16 @@ static void zero_bytes(void *p, uint32_t n) {
 /* ---------- image transfer service ----------------------------------
  * Vendor-specific service 0xFFF0 with one write characteristic 0xFFF1
  * (write-without-response, up to 20 bytes per packet). Data is streamed
- * straight into the panel's RAM, so the 30,000 bytes of a full frame cost
- * no application RAM at all.
+ * straight into the panel's RAM, so the 9,472 bytes of a full tri-colour
+ * frame cost no application RAM at all.
  *
  * Packet format (byte 0 = opcode, up to 19 payload bytes):
  *   0x01            begin session: panel reset+init, open black plane
  *   0x02 <19 bytes> image data for the current plane
  *   0x03            switch to the red plane
- *   0x04            end: refresh the panel (blocking, ~20 s)
- * After 15000 bytes the driver switches plane automatically, so a client
- * may simply stream 15000 + 15000 bytes and then send 0x04.
+ *   0x04            end: refresh the panel (blocking, ~15 s)
+ * After 4736 bytes the driver switches plane automatically, so a client
+ * may simply stream 4736 + 4736 bytes and then send 0x04.
  */
 #define IMG_OP_BEGIN 0x01
 #define IMG_OP_DATA  0x02
@@ -229,8 +229,11 @@ static void zero_bytes(void *p, uint32_t n) {
 
 static uint16_t m_img_handle;
 static uint16_t m_cfg_handle;
+static uint16_t m_cfg_cccd_handle;
+static int m_cfg_notify;          /* client subscribed to completion */
 static uint32_t m_img_state;      /* 0 idle, 1 black plane, 2 red plane, 3 refreshing */
 static uint32_t m_img_count;      /* bytes pushed into the current plane  */
+static uint32_t m_refresh_start;  /* rtc_ms() when the refresh was issued  */
 static uint32_t m_refresh_until;  /* rtc_ms() deadline while refreshing   */
 static uint16_t m_conn_handle = BLE_CONN_HANDLE_INVALID;
 
@@ -264,7 +267,8 @@ static void led_tick(void) {
     led_set(PIN_LED3, (m_panel_busy || m_img_state == 3) ? 1 : 0);
 }
 
-#define IMG_REFRESH_MS 20000      /* UC8176 full 3-colour update */
+/* How long the panel needs for a full update; comes from the active
+ * panel descriptor (see panel.h), so it follows a panel swap. */
 
 static void img_finish(void) {
     if (m_img_state == 3) return;      /* already refreshing */
@@ -278,13 +282,14 @@ static void img_finish(void) {
     eink_refresh_start();
     m_bt_transfer = 0;
     m_img_state = 3;
-    m_refresh_until = rtc_ms() + IMG_REFRESH_MS;
+    m_refresh_start = rtc_ms();
+    m_refresh_until = m_refresh_start + eink_refresh_ms();
     led_set(PIN_LED3, 1);         /* LED3 on while the panel refreshes */
     hwuart_puts("IMG refresh started\r\n");
-    if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
-        (void)sd_ble_gap_disconnect(m_conn_handle,
-                                    BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
-    }
+    /* The link is deliberately KEPT. The refresh is polled from the main
+     * loop (eink_panel_busy()), which keeps servicing the SoftDevice, so
+     * supervision does not time out. When the panel is done the client
+     * gets a notification on 0xFFF2 instead of a surprise disconnect. */
 }
 
 static void img_switch_red(void) {
@@ -393,6 +398,12 @@ static void gatt_init(void) {
     zero_bytes(&cmd_md, sizeof(cmd_md));
     cmd_md.char_props.write = 1;
     cmd_md.char_props.write_wo_resp = 1;
+    /* Readable: a 20-byte packed snapshot of the live configuration, so a
+     * client (the web page) can show the current values instead of
+     * guessing. Layout is documented in README.md ("网页配置"). */
+    cmd_md.char_props.read = 1;
+    /* Notified (1 byte = 0x01) when an image refresh finishes. */
+    cmd_md.char_props.notify = 1;
     ble_gatts_attr_t cmd_attr;
     zero_bytes(&cmd_attr, sizeof(cmd_attr));
     cmd_attr.p_attr_md = &attr_md;
@@ -406,10 +417,43 @@ static void gatt_init(void) {
     check("cfg_chr", sd_ble_gatts_characteristic_add(svc_handle, &cmd_md,
                                                      &cmd_attr, &cmd_handles));
     m_cfg_handle = cmd_handles.value_handle;
+    m_cfg_cccd_handle = cmd_handles.cccd_handle;
+}
+
+/* ---- packed status for the read side of 0xFFF2 ---------------------
+ * 0  4  'E','I','N','K'         magic
+ * 4  1  config version
+ * 5  1  panel index
+ * 6  1  flags: bit0 boot_refresh, bit1 wake_enable, bit2 panel_sleep
+ * 7  1  adv_timeout_s
+ * 8  1  idle_rounds
+ * 9  11 name (NUL padded)
+ * Clients read this right after connecting; it is refreshed on every
+ * config write so the web page always sees what is actually live. */
+static uint8_t m_status[20];
+
+static void cfg_status_push(uint16_t conn) {
+    m_status[0] = 'E'; m_status[1] = 'I'; m_status[2] = 'N'; m_status[3] = 'K';
+    m_status[4] = (uint8_t)CFG_VERSION;
+    m_status[5] = g_cfg->panel;
+    m_status[6] = (uint8_t)((g_cfg->boot_refresh ? 1u : 0u) |
+                            (g_cfg->wake_enable ? 2u : 0u) |
+                            (g_cfg->panel_sleep ? 4u : 0u));
+    m_status[7] = (uint8_t)g_cfg->adv_timeout_s;
+    m_status[8] = (uint8_t)g_cfg->idle_rounds;
+    for (uint32_t i = 0; i < 11; i++) {
+        m_status[9 + i] = (i < CFG_NAME_LEN && g_cfg->name[i]) ? (uint8_t)g_cfg->name[i] : 0;
+    }
+    ble_gatts_value_t v;
+    zero_bytes(&v, sizeof(v));
+    v.len = (uint16_t)sizeof(m_status);
+    v.offset = 0;
+    v.p_value = m_status;
+    (void)sd_ble_gatts_value_set(conn, m_cfg_handle, &v);
 }
 
 /* Handle one config command from characteristic 0xFFF2. */
-static void cfg_write(const uint8_t *p, uint16_t len) {
+static void cfg_write_inner(const uint8_t *p, uint16_t len) {
     char buf[24];
     if (len > sizeof(buf) - 1) len = (uint16_t)(sizeof(buf) - 1);
     for (uint16_t i = 0; i < len; i++) buf[i] = (char)p[i];
@@ -438,6 +482,7 @@ static void cfg_write(const uint8_t *p, uint16_t len) {
     hwuart_puts("CFG ");
     hwuart_puts(buf);
     hwuart_puts("\r\n");
+    panel_select(g_cfg->panel);
     apply_gap_config();
     /* Re-advertise so name/address changes are visible immediately -
      * but only when idle: while connected a restart is a no-op and the
@@ -446,6 +491,34 @@ static void cfg_write(const uint8_t *p, uint16_t len) {
         (void)sd_ble_gap_adv_stop();
         start_advertising();
     }
+}
+
+/* Every write lands in the characteristic's value in the stack, so the
+ * packed status has to be re-published afterwards - otherwise the next
+ * read returns the command text ("save", "panel=4", ...) instead of the
+ * configuration snapshot. */
+static void cfg_write(const uint8_t *p, uint16_t len) {
+    cfg_write_inner(p, len);
+    cfg_status_push(m_conn_handle);
+}
+
+/* Tell a subscribed client that the panel finished updating. */
+#define IMG_EVT_READY 0x01
+static void notify_image_done(void) {
+    if (m_conn_handle == BLE_CONN_HANDLE_INVALID || !m_cfg_notify) return;
+    uint8_t v = IMG_EVT_READY;
+    uint16_t len = 1;
+    ble_gatts_hvx_params_t hvx;
+    zero_bytes(&hvx, sizeof(hvx));
+    hvx.handle = m_cfg_handle;
+    hvx.type = BLE_GATT_HVX_NOTIFICATION;
+    hvx.offset = 0;
+    hvx.p_len = &len;
+    hvx.p_data = &v;
+    uint32_t err = sd_ble_gatts_hvx(m_conn_handle, &hvx);
+    hwuart_puts("IMG notify 0x");
+    hwuart_put_hex32(err);
+    hwuart_puts("\r\n");
 }
 
 static void ble_init(void) {
@@ -483,7 +556,7 @@ int main(void) {
     led_init();
     wake_input_init();
     uart_init();
-    hwuart_puts("\r\nEINK-N51802 boot (WFT0420CZ15 400x300)\r\n");
+    hwuart_puts("\r\nEINK-N51802 boot (multi-panel)\r\n");
     hwuart_puts(" CFG ");
     hwuart_puts(cfg_from_flash() ? "flash" : "defaults");
     hwuart_puts(" name=");
@@ -505,15 +578,17 @@ int main(void) {
     led_set(PIN_LED3, 1);                 /* P5 on: e-ink busy  */
 
     eink_gpio_init();
-    /* Panel confirmed on hardware: this WFT0420CZ15 is the UC8176 ("old")
-     * batch - the pattern only appeared when the stock-firmware-derived
-     * UC8176 sequence ran. Waveshare's 0x2F read-back auto-detect needs
-     * MISO, which this board does not route, so the variant is fixed
-     * here. Set EINK_V2 instead to try the UC8179 batch. */
-    eink_set_variant(EINK_V1);
+    /* The panel is a run-time choice (config key `panel=`, see panel.h).
+     * All supported panels are compiled in: the original 4.2" WFT0420CZ15
+     * on UC8176/UC8179 and the 2.9" HINK-E029A01 on SSD1680/UC8151. */
+    panel_select(g_cfg->panel);
 
     if (g_cfg->boot_refresh) {
-        hwuart_puts("E-ink: UC8176 init\r\n");
+        hwuart_puts("E-ink: ");
+        hwuart_puts(panel_active()->name);
+        hwuart_puts(" ");
+        hwuart_puts(panel_active()->ctrl);
+        hwuart_puts(" init\r\n");
         m_panel_busy = 1;
         eink_show_test_pattern();         /* blocking, full refresh     */
         m_panel_busy = 0;
@@ -546,13 +621,19 @@ int main(void) {
          * sd_app_evt_wait() so BLE events keep being served. */
         led_tick();
         if (m_img_state == 3) {
-            if ((int32_t)(rtc_ms() - m_refresh_until) >= 0) {
-                eink_refresh_finish();
+            int32_t elapsed = (int32_t)(rtc_ms() - m_refresh_start);
+            int32_t nominal = (int32_t)(m_refresh_until - m_refresh_start);
+            /* Done when the nominal time has passed AND the panel is idle;
+             * the extra window is a hard cap for a stuck BUSY line. */
+            if ((elapsed >= nominal && !eink_panel_busy()) ||
+                elapsed >= nominal + 20000) {
+                eink_refresh_complete();
                 m_img_state = 0;
                 m_img_count = 0;
                 led_set(PIN_LED3, 0);
                 hwuart_puts("IMG done\r\n");
-                start_advertising();   /* why: refresh ends the link */
+                notify_image_done();
+                if (m_conn_handle == BLE_CONN_HANDLE_INVALID) start_advertising();
             } else {
                 delay_ms(10);
             }
@@ -580,6 +661,7 @@ int main(void) {
             } else if (evt_id == BLE_GAP_EVT_CONNECTED) {
                 m_idle_advertising_rounds = 0;
                 m_conn_handle = ((ble_evt_t *)evt_buf)->evt.gap_evt.conn_handle;
+                cfg_status_push(m_conn_handle);
                 led_set(PIN_LED2, 1);     /* LED2 on = BLE connected */
                 hwuart_puts("BLE connected\r\n");
             } else if (evt_id == BLE_GAP_EVT_DISCONNECTED) {
@@ -595,6 +677,11 @@ int main(void) {
                     img_write(wr->data, wr->len);
                 } else if (wr->handle == m_cfg_handle) {
                     cfg_write(wr->data, wr->len);
+                } else if (wr->handle == m_cfg_cccd_handle) {
+                    m_cfg_notify = (wr->len >= 1 && (wr->data[0] & 0x01)) ? 1 : 0;
+                    hwuart_puts("CFG notify ");
+                    hwuart_put_u32((uint32_t)m_cfg_notify);
+                    hwuart_puts("\r\n");
                 }
             }
         }

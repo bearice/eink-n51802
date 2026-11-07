@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """Build the nRF51802 e-ink application and merge it with the S110 SoftDevice.
 
+All supported panels are compiled into one image and selected at run time
+through the `panel=` configuration key (characteristic 0xFFF2):
+
+  0  WFT0420CZ15 @ UC8176   4.2"  400x300 B/W/R  (original board)
+  1  WFT0420CZ15 @ UC8179   4.2"  400x300 B/W/R  (newer panel batch)
+  2  HINK-E029A01 @ SSD1680 2.9"  128x296 B/W/R  (default)
+  3  HINK-E029A01 @ UC8151  2.9"  128x296 B/W/R
+
 Outputs (bin/):
   eink_n51802_app.bin     application binary (loaded at 0x18000)
   eink_n51802_app.hex     same, Intel HEX at 0x18000
@@ -23,13 +31,23 @@ OUT = os.path.join(WS, "bin")
 OBJ = os.path.join(WS, "build", "obj")
 APP_ORIGIN = 0x18000
 
-SRCS = ["src/startup.c", "src/main.c", "src/eink.c", "src/config.c"]
+SRCS = [
+    "src/startup.c",
+    "src/main.c",
+    "src/eink.c",
+    "src/epd_bus.c",
+    "src/panel_wft0420.c",
+    "src/panel_hink.c",
+    "src/config.c",
+]
 CFLAGS = [
     "-mcpu=cortex-m0", "-mthumb", "-O2", "-g",
     "-ffreestanding", "-nostdlib", "-fno-builtin", "-fno-stack-protector",
     "-Wall", "-Wextra",
     "-Isrc", f"-I{SD_HDR}", "-DAPP_TIMER=1",
 ]
+if os.environ.get("EPD_DIAG"):
+    CFLAGS.append("-DEPD_DIAG_BANDS")
 
 
 def run(cmd):
@@ -62,24 +80,25 @@ def load_hex(path, buf):
 def main():
     os.makedirs(OUT, exist_ok=True)
     os.makedirs(OBJ, exist_ok=True)
+
     objs = []
     for src in SRCS:
         obj = os.path.join(OBJ, os.path.splitext(os.path.basename(src))[0] + ".o")
         run([CC, *CFLAGS, "-c", os.path.join(WS, src), "-o", obj])
         objs.append(obj)
+
     elf = os.path.join(OUT, "eink_n51802_app.elf")
     run([CC, "-mcpu=cortex-m0", "-mthumb", "-O2",
          "-T", os.path.join(WS, "firmware.ld"),
          "-nostdlib", "-e", "Reset_Handler",
          *objs, "-lgcc", "-o", elf])
-    print(f"app elf: {elf}")
 
     app_bin = os.path.join(OUT, "eink_n51802_app.bin")
     run([OBJCOPY, "-O", "binary", elf, app_bin])
     app_hex = os.path.join(OUT, "eink_n51802_app.hex")
     run([OBJCOPY, "-O", "ihex", elf, app_hex])
 
-    # merged 256 KB image
+    # merged 256 KB image: S110 at 0x0 + app at 0x18000
     full = bytearray(b"\xff" * (256 * 1024))
     load_hex(SD_HEX, full)
     app = open(app_bin, "rb").read()

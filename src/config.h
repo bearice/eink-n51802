@@ -17,10 +17,12 @@
 
 #include <stdint.h>
 
+#include "panel.h"
+
 #define CFG_PAGE_ADDR   0x3FC00UL
 #define CFG_PAGE_SIZE   1024UL
 #define CFG_MAGIC       0x45494E4BUL        /* 'EINK' */
-#define CFG_VERSION     5
+#define CFG_VERSION     6
 #define CFG_NAME_LEN    16
 
 typedef struct {
@@ -32,6 +34,8 @@ typedef struct {
     uint8_t  boot_refresh;       /* 1 = draw the info screen at boot      */
     uint8_t  panel_sleep;        /* 1 = deep-sleep the panel after a refresh */
     uint8_t  flags;              /* reserved                              */
+    uint8_t  panel;              /* panel index, see panel.h              */
+    uint8_t  panel_pad[3];
     char     name[CFG_NAME_LEN]; /* BLE device name, NUL padded           */
     uint8_t  addr[6];            /* BLE address, little-endian            */
     uint8_t  addr_set;           /* 0 = use the FICR factory address      */
@@ -59,6 +63,7 @@ int cfg_from_flash(void);
  * Supported: name=<str>, adv=<sec>, idle=<rounds>, wake=<0|1>,
  *            addr=AA:BB:CC:DD:EE:FF, addr=auto (use FICR),
  *            boot=<0|1> (redraw the screen on reset),
+ *            panel=<0..3> (panel + controller, see panel.h),
  *            reset. */
 int cfg_apply_text(const char *s, uint32_t len);
 

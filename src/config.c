@@ -29,6 +29,8 @@ void cfg_defaults(void) {
     m_cfg.boot_refresh = 1;
     m_cfg.panel_sleep = 0;    /* keep the panel armed for partial updates */
     m_cfg.flags = 0;
+    m_cfg.panel = CFG_PANEL_DEFAULT;
+    m_cfg.panel_pad[0] = m_cfg.panel_pad[1] = m_cfg.panel_pad[2] = 0;
     for (uint32_t i = 0; i < 6; i++) m_cfg.addr[i] = 0;
     m_cfg.addr_set = 0;
     m_cfg.addr_pad[0] = m_cfg.addr_pad[1] = 0;
@@ -45,6 +47,7 @@ static int cfg_valid(const cfg_t *c) {
     if (c->idle_rounds > 600) return 0;
     if (c->name[CFG_NAME_LEN - 1] != 0) return 0;
     if (c->name[0] == 0) return 0;
+    if (c->panel >= PANEL_COUNT) return 0;
     uint32_t want = crc32((const uint8_t *)c, sizeof(cfg_t) - sizeof(uint32_t));
     return want == c->crc;
 }
@@ -199,6 +202,12 @@ int cfg_apply_text(const char *s, uint32_t len) {
         uint32_t v;
         if (!parse_u32(val, vlen, &v) || v > 1) return -1;
         m_cfg.wake_enable = (uint8_t)v;
+        return 1;
+    }
+    if (streq(s, "panel", 5) && eq == 5) {
+        uint32_t v;
+        if (!parse_u32(val, vlen, &v) || v >= PANEL_COUNT) return -1;
+        m_cfg.panel = (uint8_t)v;
         return 1;
     }
     return 0;
